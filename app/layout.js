@@ -2,8 +2,8 @@ import './globals.css'
 import { Toaster } from '@/components/ui/sonner'
 
 export const metadata = {
-  title: 'BoltClone - AI Component Builder',
-  description: 'Build React components with AI - powered by Ollama or any LLM API',
+  title: 'DTB — Down To Build',
+  description: 'AI React component builder with Cline-style agent workflow, Supabase sync, and GitHub push.',
 }
 
 export default function RootLayout({ children }) {
