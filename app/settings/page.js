@@ -189,9 +189,19 @@ export default function SettingsPage() {
                 </div>
               </Field>
               {s.agentMode && (
-                <Field label={`Max iterations: ${s.maxIterations}`}>
-                  <input type="range" min={1} max={5} value={s.maxIterations} onChange={(e) => update({ maxIterations: parseInt(e.target.value) })} className="w-full max-w-md accent-neutral-900 dark:accent-white" />
-                </Field>
+                <>
+                  <Field label="Unlimited iterations" hint="Keep retrying until the component renders without errors. Press the red Stop button in the workspace to abort.">
+                    <div className="flex items-center gap-3">
+                      <Switch checked={!!s.unlimitedIterations} onCheckedChange={(v) => update({ unlimitedIterations: v })} />
+                      <span className="text-sm text-neutral-500">{s.unlimitedIterations ? 'Loop until success' : `Capped at ${s.maxIterations}`}</span>
+                    </div>
+                  </Field>
+                  {!s.unlimitedIterations && (
+                    <Field label={`Max iterations: ${s.maxIterations}`}>
+                      <input type="range" min={1} max={20} value={s.maxIterations} onChange={(e) => update({ maxIterations: parseInt(e.target.value) })} className="w-full max-w-md accent-neutral-900 dark:accent-white" />
+                    </Field>
+                  )}
+                </>
               )}
               <Field label="Streaming" hint="Stream tokens as they arrive (Ollama / OpenAI / Anthropic / Groq / OpenRouter).">
                 <div className="flex items-center gap-3">

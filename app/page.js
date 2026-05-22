@@ -30,28 +30,75 @@ function buildIframeSrc(code) {
 <html>
 <head>
 <meta charset="utf-8" />
-<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- crossorigin="anonymous" exposes real error messages instead of "Script error." for cross-origin CDN scripts -->
+<script crossorigin="anonymous" src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin="anonymous" src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script crossorigin="anonymous" src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <style>html,body,#root{margin:0;padding:0;min-height:100vh;background:#fafafa;color:#0a0a0a;font-family:system-ui,sans-serif}</style>
 <script>
-window.addEventListener('error', (e) => {
-  parent.postMessage({ __dtb_error: true, message: e.message }, '*');
-});
+  // Capture every error type with the maximum amount of detail.
+  function reportError(msg, source, line, col, stack) {
+    var detail = [msg];
+    if (source) detail.push('at ' + source + ':' + (line||'?') + ':' + (col||'?'));
+    if (stack) detail.push(stack);
+    parent.postMessage({ __dtb_error: true, message: detail.filter(Boolean).join('\\n') }, '*');
+  }
+  window.addEventListener('error', function (e) {
+    reportError(e.message || 'unknown error', e.filename, e.lineno, e.colno, e.error && e.error.stack);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    var r = e.reason;
+    reportError('Unhandled promise rejection: ' + (r && (r.message || r.toString())), '', '', '', r && r.stack);
+  });
+  // Override console.error so React-internal warnings/errors reach the agent too.
+  var _origErr = console.error;
+  console.error = function () {
+    try {
+      var args = Array.prototype.slice.call(arguments);
+      var first = args[0];
+      var s = (first && first.message) || (typeof first === 'string' ? first : JSON.stringify(first));
+      // Only forward React error messages, not random warnings.
+      if (s && /(Error:|Cannot read|undefined|not a function|Invalid|Uncaught)/i.test(s)) {
+        parent.postMessage({ __dtb_error: true, message: 'console.error: ' + s }, '*');
+      }
+    } catch (e) {}
+    return _origErr.apply(console, arguments);
+  };
 </script>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel" data-presets="react">
+// React ErrorBoundary catches render-time errors in App so the agent can see them.
+class DtbErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error: error }; }
+  componentDidCatch(error, info) {
+    parent.postMessage({
+      __dtb_error: true,
+      message: (error && error.message ? error.message : String(error)) +
+               (info && info.componentStack ? '\\nComponent stack:' + info.componentStack : '')
+    }, '*');
+  }
+  render() {
+    if (this.state.error) {
+      return React.createElement('div', {
+        style: { padding: '24px', color: '#dc2626', fontFamily: 'monospace', whiteSpace: 'pre-wrap', background: '#fef2f2' }
+      }, '\u26A0\uFE0F Render error:\\n' + (this.state.error.message || String(this.state.error)));
+    }
+    return this.props.children;
+  }
+}
 try {
 ${safeCode}
   const root = ReactDOM.createRoot(document.getElementById('root'));
-  root.render(<App />);
-  parent.postMessage({ __dtb_ok: true }, '*');
+  root.render(React.createElement(DtbErrorBoundary, null, React.createElement(App, null)));
+  // We only mark __dtb_ok if no error fires within the next tick.
+  setTimeout(function(){ parent.postMessage({ __dtb_ok: true }, '*'); }, 100);
 } catch (e) {
-  document.getElementById('root').innerHTML = '<div style="padding:24px;color:#dc2626;font-family:monospace;white-space:pre-wrap;background:#fef2f2">⚠️ Render error:\n' + (e.message || e) + '</div>';
-  parent.postMessage({ __dtb_error: true, message: (e.message || String(e)) }, '*');
+  document.getElementById('root').innerHTML = '<div style="padding:24px;color:#dc2626;font-family:monospace;white-space:pre-wrap;background:#fef2f2">\u26A0\uFE0F Boot error:\\n' + (e.message || e) + (e.stack ? '\\n' + e.stack : '') + '</div>';
+  parent.postMessage({ __dtb_error: true, message: 'Boot: ' + (e.message || String(e)) + (e.stack ? '\\n' + e.stack : '') }, '*');
 }
 </script>
 </body>
@@ -142,7 +189,7 @@ export default function App() {
 
   // Streamed call
   const streamLLM = async (msgs, onChunk) => {
-    const controller = new AbortController()
+    const controller = abortRef.current || new AbortController()
     abortRef.current = controller
     const res = await fetch('/api/llm/stream', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -167,9 +214,12 @@ export default function App() {
   }
 
   const nonStreamLLM = async (msgs) => {
+    const controller = abortRef.current || new AbortController()
+    abortRef.current = controller
     const res = await fetch('/api/llm/chat', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildPayload(msgs)),
+      signal: controller.signal,
     })
     const data = await res.json()
     if (!res.ok) throw new Error(data.error || 'Request failed')
@@ -191,6 +241,8 @@ export default function App() {
     const baseMessages = [...(active.messages || []), userMsg]
     updateActive({ messages: baseMessages })
     setInput(''); setLoading(true); setAgentSteps([]); setStreamingText('')
+    // Fresh abort controller for the whole send (covers loop iterations too).
+    abortRef.current = new AbortController()
 
     const isMultiFile = eff.outputMode === 'webcontainer' || eff.outputMode === 'local'
     const isSupabase = eff.outputMode === 'supabase'
@@ -236,9 +288,21 @@ export default function App() {
         let convMessages = baseMessages.slice()
         let finalCode = null
         let lastContent = ''
-        const maxIter = Math.max(1, Math.min(5, eff.maxIterations || 3))
+        const cap = Number(eff.maxIterations) || 3
+        const unlimited = cap >= 99 || eff.unlimitedIterations === true
+        const maxIter = unlimited ? 1000 : Math.max(1, Math.min(20, cap))
 
-        for (let i = 0; i < maxIter; i++) {
+        let i = 0
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          if (!unlimited && i >= maxIter) {
+            setAgentSteps(s => [...s, { kind: 'warn', label: `Max iterations reached (${maxIter})` }])
+            break
+          }
+          if (abortRef.current?.signal?.aborted) {
+            setAgentSteps(s => [...s, { kind: 'warn', label: 'Stopped by user' }])
+            break
+          }
           setAgentSteps(s => [...s, { kind: 'thinking', label: i === 0 ? 'Generating...' : `Iteration ${i + 1}: fixing...` }])
           setStreamingText('')
           const content = await callLLM(convMessages, (t) => setStreamingText(t))
@@ -254,13 +318,13 @@ export default function App() {
           await new Promise(r => setTimeout(r, 2500))
           const err = lastErrorRef.current === 'pending' ? null : lastErrorRef.current
           if (!err) { setAgentSteps(s => [...s, { kind: 'ok', label: '✓ Render succeeded' }]); break }
-          setAgentSteps(s => [...s, { kind: 'err', label: `✗ ${err.slice(0, 120)}` }])
+          setAgentSteps(s => [...s, { kind: 'err', label: `✗ ${err.slice(0, 160)}` }])
           convMessages = [
             ...convMessages,
             { role: 'assistant', content },
             { role: 'user', content: `The component above failed to render with this error:\n\n${err}\n\nReturn the FULL corrected component code in a single \`\`\`jsx block. Do not explain.` },
           ]
-          if (i === maxIter - 1) setAgentSteps(s => [...s, { kind: 'warn', label: 'Max iterations reached' }])
+          i++
         }
 
         const aiMsg = { role: 'assistant', content: lastContent }

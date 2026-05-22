@@ -58,22 +58,16 @@
 
 | OS | Command |
 |---|---|
-| **Windows** | Right-click `install.bat` → **Run as administrator** |
+| **Windows** | Right-click `install.bat` → **Run as administrator**. If the window closes unexpectedly, run **`install-debug.bat`** instead — it captures all output to `install.log` and stays open. |
 | **macOS / Linux** | `chmod +x install.sh && ./install.sh` |
 
-These scripts will:
-1. Detect / install **Node.js LTS** (via winget on Windows, Homebrew on macOS, apt/dnf/pacman on Linux).
-2. Install **Yarn** globally.
-3. Install **Git** if missing.
-4. Install and start **MongoDB Community 7.0** (service / launchd / systemd).
-5. Install **Ollama** and optionally pull `qwen2.5-coder:7b`.
-6. Create `.env` with default DTB values.
-7. Run `yarn install`.
-8. Offer to start `yarn dev` and open the browser.
+These scripts will: detect / install Node 20 LTS, Yarn, Git, MongoDB 7.0, Ollama, VS Code + Cline extension, create `.env`, run `yarn install`, and offer to start `yarn dev`.
 
-Run from the DTB project root (where `package.json` lives).
+### Option B — step-by-step manual install
 
-### Option B — manual
+See **[INSTALL.md](INSTALL.md)** for the full guide: Windows, macOS, Linux, troubleshooting common errors (`NODE_OPTIONS is not recognized`, port conflicts, MongoDB service, Ollama not reachable, WebContainer prerequisites, etc.).
+
+### Option C — TL;DR if you already have Node + Yarn
 
 ```bash
 git clone <your-repo-url> dtb
