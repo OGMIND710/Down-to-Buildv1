@@ -273,21 +273,33 @@ export default function App() {
 
   // Lifecycle events emitted by WebContainerRunner (mounted via ref-pattern below)
   const wcLifecycle = useCallback((evt) => {
-    if (evt.type === 'ready') { wcReadyRef.current = true; wcErrorRef.current = '' }
+    if (evt.type === 'ready') { wcReadyRef.current = true; /* keep prior error so we can detect compile failures that arrive shortly after */ }
     else if (['error-detected', 'dev-exited', 'install-failed', 'boot-failed'].includes(evt.type)) {
-      if (!wcReadyRef.current) wcErrorRef.current = (evt.message || evt.type) + '\n\n--- last 2KB of output ---\n' + (evt.buffer || '')
+      // Capture errors whether the server is "ready" or not — Next.js can still emit
+      // "Failed to compile" or "Module not found" AFTER the server bound to its port.
+      wcErrorRef.current = (evt.message || evt.type) + '\n\n--- last 2KB of output ---\n' + (evt.buffer || '')
+      // Force the loop to treat this as a failure instead of a ready
+      wcReadyRef.current = false
     }
   }, [])
 
   // Wait for the WebContainer to either become ready or error out (or timeout).
-  const waitForWcOutcome = (maxMs = 90000) => new Promise((resolve) => {
+  // After server-ready we wait an extra "grace" period (default 6s) to catch
+  // Next.js compile errors that arrive AFTER the port is bound.
+  const waitForWcOutcome = (maxMs = 120000, graceMs = 12000) => new Promise((resolve) => {
     const start = Date.now()
+    let readySince = null
     const tick = () => {
       if (abortRef.current?.signal?.aborted) return resolve({ kind: 'abort' })
-      if (wcReadyRef.current) return resolve({ kind: 'ready' })
+      // Error always wins — check it first
       if (wcErrorRef.current) return resolve({ kind: 'error', message: wcErrorRef.current })
+      if (wcReadyRef.current) {
+        if (readySince === null) readySince = Date.now()
+        // Stay in the grace window: if no error arrives, we accept success.
+        if (Date.now() - readySince > graceMs) return resolve({ kind: 'ready' })
+      }
       if (Date.now() - start > maxMs) return resolve({ kind: 'timeout', message: `No "server-ready" event after ${Math.round(maxMs/1000)}s.` })
-      setTimeout(tick, 500)
+      setTimeout(tick, 400)
     }
     tick()
   })
@@ -717,6 +729,49 @@ export default function App() {
                 </ScrollArea>
 
                 <div className="border-t border-neutral-200 dark:border-neutral-800 p-3 bg-white dark:bg-neutral-950">
+                  {/* Quick controls — output mode + model picker, inline */}
+                  <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                    <div className="flex gap-0.5 p-0.5 bg-neutral-100 dark:bg-neutral-900 rounded-md text-[10px]">
+                      {OUTPUT_MODES.map(m => (
+                        <button key={m.id} onClick={() => setOverride('outputMode', m.id)}
+                          title={m.desc}
+                          className={`px-2 py-1 rounded ${eff.outputMode === m.id ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-sm' : 'text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'}`}>
+                          {m.short || m.label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex gap-0.5 p-0.5 bg-neutral-100 dark:bg-neutral-900 rounded-md text-[10px]">
+                      <button onClick={() => setOverride('mode', 'ollama')}
+                        className={`px-2 py-1 rounded ${eff.mode === 'ollama' ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-sm' : 'text-neutral-500'}`}>Ollama</button>
+                      <button onClick={() => setOverride('mode', 'api')}
+                        className={`px-2 py-1 rounded ${eff.mode === 'api' ? 'bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white shadow-sm' : 'text-neutral-500'}`}>API</button>
+                    </div>
+                    {eff.mode === 'ollama' ? (
+                      <Input
+                        value={eff.ollamaModel}
+                        onChange={(e) => setOverride('ollamaModel', e.target.value)}
+                        placeholder="qwen2.5-coder:7b"
+                        className="h-7 text-[10px] w-44 bg-neutral-50 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800"
+                      />
+                    ) : (
+                      <>
+                        <select value={eff.provider} onChange={(e) => setOverride('provider', e.target.value)}
+                          className="h-7 text-[10px] px-1.5 rounded-md bg-neutral-100 dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800">
+                          <option value="openai">OpenAI</option>
+                          <option value="anthropic">Anthropic</option>
+                          <option value="groq">Groq</option>
+                          <option value="openrouter">OpenRouter</option>
+                        </select>
+                        <Input
+                          value={eff.apiModel}
+                          onChange={(e) => setOverride('apiModel', e.target.value)}
+                          placeholder="gpt-4o-mini"
+                          className="h-7 text-[10px] w-32 bg-neutral-50 dark:bg-neutral-900 border-neutral-200 dark:border-neutral-800"
+                        />
+                      </>
+                    )}
+                    <Link href="/settings" className="text-[10px] text-neutral-400 hover:text-neutral-700 underline ml-auto">advanced ⚙</Link>
+                  </div>
                   <div className="relative">
                     <Textarea
                       value={input} onChange={(e) => setInput(e.target.value)}

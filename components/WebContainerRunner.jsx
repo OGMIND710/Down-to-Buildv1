@@ -109,7 +109,10 @@ export default function WebContainerRunner({ project, compact = false, onLifecyc
   const appendLog = (s) => {
     setLog(prev => prev + s)
     bufferRef.current += s
-    // Detect fatal errors as they stream in
+    // Detect fatal errors as they stream in.
+    // CRITICAL: also fire after server-ready so the parent loop catches
+    // "Failed to compile" / "Module not found" overlays that Next.js shows
+    // even when the dev server has bound to its port.
     const err = detectWebContainerError(s)
     if (err) emit({ type: 'error-detected', message: err, buffer: bufferRef.current.slice(-2000) })
   }
@@ -266,8 +269,12 @@ export default function WebContainerRunner({ project, compact = false, onLifecyc
             {previewUrl || `preview will appear here once the dev server is ready on port ${WC_PORT}`}
           </div>
           {previewUrl ? (
-            <iframe title="WebContainer Preview" src={previewUrl} className="flex-1 w-full border-0"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals" />
+            <div className="flex-1 overflow-auto bg-white">
+              <iframe title="WebContainer Preview" src={previewUrl}
+                className="w-full border-0 block"
+                style={{ height: '100%', minHeight: '100%' }}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals allow-popups" />
+            </div>
           ) : (
             <div className="flex-1 flex items-center justify-center text-center p-4">
               <div>
