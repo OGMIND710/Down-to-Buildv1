@@ -4,14 +4,14 @@ REM  DTB - Down To Build : Windows All-in-One Installer
 REM  Installs : Node LTS, Yarn, Git, MongoDB, Ollama, VS Code +
 REM             Cline extension, project deps
 REM  Configures: .env, pulls a coding model, starts the dev server
+REM
+REM  Troubleshooting: if this window closes unexpectedly, run
+REM  "install-debug.bat" instead - it captures all output to
+REM  install.log even if the inner script crashes.
 REM ============================================================
 
 setlocal EnableDelayedExpansion EnableExtensions
 title DTB - Down To Build Installer
-
-REM ---------- Safety net: keep window open whatever happens ----
-REM If something goes wrong the script will jump to :keep_open at the end.
-REM No matter what, the user always sees a "Press any key..." prompt.
 
 REM ---------- Pretty banner ----------
 echo.
@@ -22,6 +22,10 @@ echo               Windows installer / bootstrap
 echo                                                            
 echo  =============================================================
 echo.
+if defined DTB_NONINTERACTIVE (
+    echo  [ non-interactive mode - prompts will use defaults ]
+    echo.
+)
 
 REM ---------- 0. Admin check ----------
 net session >nul 2>&1
@@ -163,7 +167,8 @@ REM Try to pull a coding model in background-friendly way
 where ollama >nul 2>&1
 if !errorLevel! EQU 0 (
     echo.
-    set /p PULLM="    Pull recommended coding model qwen2.5-coder:7b now? (~4.7 GB) [y/N]: "
+    set "PULLM=N"
+    if not defined DTB_NONINTERACTIVE set /p PULLM="    Pull recommended coding model qwen2.5-coder:7b now? (~4.7 GB) [y/N]: "
     if /I "!PULLM!"=="y" (
         echo     Starting ollama service in background...
         start "" /B ollama serve >nul 2>&1
@@ -186,7 +191,8 @@ if %errorLevel% NEQ 0 (
     echo     Then re-run this installer, or install manually with:
     echo         code --install-extension saoudrizwan.claude-dev
     echo.
-    set /p VSI="    Try to install VS Code via winget now? [y/N]: "
+    set "VSI=N"
+    if not defined DTB_NONINTERACTIVE set /p VSI="    Try to install VS Code via winget now? [y/N]: "
     if /I "!VSI!"=="y" (
         winget install --id Microsoft.VisualStudioCode -e --silent --accept-package-agreements --accept-source-agreements
         call :refresh_path
@@ -272,7 +278,9 @@ echo    ollama pull qwen2.5-coder:7b      (best for coding)
 echo    ollama pull deepseek-coder-v2     (16B, very capable)
 echo.
 
-set /p STARTNOW="Start DTB dev server now? [Y/n]: "
+set "STARTNOW=Y"
+if not defined DTB_NONINTERACTIVE set /p STARTNOW="Start DTB dev server now? [Y/n]: "
+if defined DTB_NONINTERACTIVE set "STARTNOW=N"
 if /I "!STARTNOW!"=="n" (
     echo  Bye!
     pause
