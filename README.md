@@ -54,6 +54,27 @@
 
 ## 🚀 Quick start
 
+### ⚡ Option A — one-click installers (recommended)
+
+| OS | Command |
+|---|---|
+| **Windows** | Right-click `install.bat` → **Run as administrator** |
+| **macOS / Linux** | `chmod +x install.sh && ./install.sh` |
+
+These scripts will:
+1. Detect / install **Node.js LTS** (via winget on Windows, Homebrew on macOS, apt/dnf/pacman on Linux).
+2. Install **Yarn** globally.
+3. Install **Git** if missing.
+4. Install and start **MongoDB Community 7.0** (service / launchd / systemd).
+5. Install **Ollama** and optionally pull `qwen2.5-coder:7b`.
+6. Create `.env` with default DTB values.
+7. Run `yarn install`.
+8. Offer to start `yarn dev` and open the browser.
+
+Run from the DTB project root (where `package.json` lives).
+
+### Option B — manual
+
 ```bash
 git clone <your-repo-url> dtb
 cd dtb
