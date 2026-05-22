@@ -8,10 +8,10 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-background text-foreground antialiased">
+    <html lang="en">
+      <body className="bg-neutral-50 text-neutral-900 antialiased">
         {children}
-        <Toaster theme="dark" position="top-right" />
+        <Toaster position="top-right" />
       </body>
     </html>
   )

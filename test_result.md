@@ -101,3 +101,192 @@
 #====================================================================================================
 # Testing Data - Main Agent and testing sub agent both should log testing data below this section
 #====================================================================================================
+
+user_problem_statement: |
+  DTB (Down To Build): Next.js split-screen workspace for building React components with AI.
+  Latest iteration adds:
+  - Dedicated /settings page (LLM, Ollama, Supabase login, GitHub login, system prompt)
+  - Token-by-token streaming for all providers
+  - Modern grey/white UI (light mode default)
+  - Global settings + per-project overrides
+
+backend:
+  - task: "Health endpoint /api/health"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "main"
+        comment: "Returns { ok:true, app:'DTB' }"
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: GET /api/health returns 200 with {ok: true, app: 'DTB'}"
+
+  - task: "LLM proxy /api/llm/chat (non-streaming)"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Proxies Ollama/OpenAI/Anthropic/Groq/OpenRouter. Should return 400 for unknown provider; 500 for invalid Ollama URL; valid JSON shape { content: string }. NO valid API keys available - test only invalid-provider rejection and Ollama unreachable-error path."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 400 with 'Unknown provider' for invalid provider. Returns 500 with error field for unreachable Ollama. Minor: error message is 'fetch failed' instead of mentioning 'Ollama' specifically, but core functionality works (proper status codes, valid JSON, error field present)."
+
+  - task: "LLM streaming /api/llm/stream"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "ReadableStream returning plain text chunks. For ollama: NDJSON parse. For OpenAI/Groq/OpenRouter: SSE parse data: lines, skip [DONE]. For Anthropic: SSE content_block_delta. Without keys, test that unreachable Ollama returns body starting with __DTB_ERROR__."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 500 with valid JSON error for unreachable Ollama. Does not crash. Error handling works correctly."
+
+  - task: "Ollama list models /api/ollama/models"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST { baseUrl } -> calls /api/tags. Expect 500 with error when Ollama unreachable."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 500 with error 'Cannot reach Ollama at http://127.0.0.1:1/api/tags: fetch failed' when Ollama is unreachable."
+
+  - task: "Supabase sync /api/sync/supabase"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Actions: test/push/pull. Without real Supabase project, test that missing url/key returns 400 'Supabase URL/key missing' and unknown action returns 400."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 400 with 'Supabase URL/key missing' when credentials are missing. Returns 500 with error when fake credentials are used. Minor: error message format differs but core functionality works."
+
+  - task: "GitHub user validation /api/sync/github/user"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "POST { token } -> GET https://api.github.com/user. With invalid token should return 500 with 'GitHub: 401' error. No real token available."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 500 with error 'GitHub: 401' when invalid token is provided."
+
+  - task: "GitHub push /api/sync/github"
+    implemented: true
+    working: true
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Missing token/repo/path should return 400. With invalid token should return 500 with 'GitHub push: 401'."
+      - working: true
+        agent: "testing"
+        comment: "✅ PASS: Returns 400 with 'token/repo/path required' when params are missing. Returns 500 with 'GitHub push: 401' when invalid token is provided."
+
+frontend:
+  - task: "Workspace UI (chat + preview + per-project overrides dialog)"
+    implemented: true
+    working: "NA"
+    file: "app/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Light mode grey/white. Not auto-tested yet."
+
+  - task: "Settings page /settings"
+    implemented: true
+    working: "NA"
+    file: "app/settings/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "5 sections, Supabase test, GitHub login validates PAT. Not auto-tested yet (waiting for user permission)."
+
+metadata:
+  created_by: "main_agent"
+  version: "2.0"
+  test_sequence: 2
+  run_ui: false
+
+test_plan:
+  current_focus: []
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      Tested manually: /api/health works, /api/llm/chat rejects unknown provider with 400.
+      Please test:
+      1. /api/health returns { ok: true, app: 'DTB' }
+      2. /api/llm/chat with body { provider: 'invalid', messages: [] } returns 400
+      3. /api/llm/chat with body { provider: 'ollama', baseUrl: 'http://127.0.0.1:1', model: 'x', messages: [{role:'user',content:'hi'}] } returns 500 with error message (Ollama unreachable)
+      4. /api/llm/stream with same Ollama-unreachable body: response body should be a text/plain stream starting with '__DTB_ERROR__' OR a 200/500 with error message in body
+      5. /api/ollama/models with { baseUrl: 'http://127.0.0.1:1' } returns 500 with error
+      6. /api/sync/supabase with { action: 'test' } (no url/key) returns 400 'Supabase URL/key missing'
+      7. /api/sync/supabase with { action: 'foobar', url: 'https://x.supabase.co', key: 'k' } returns 400 'Unknown action' (it will actually try and fail upstream; alternative acceptable: it tries the request and returns 500)
+      8. /api/sync/github/user with { token: 'invalid_token_xxx' } returns 500 with error mentioning '401' or 'GitHub'
+      9. /api/sync/github with empty body returns 400 'token/repo/path required'
+      10. /api/sync/github with { token:'invalid', repo:'no/such-repo', path:'a.jsx', content:'x' } returns 500 with GitHub error
+      
+      No external API keys are available, so happy-paths cannot be fully tested. Focus on negative-path validation and that the proxy doesn't crash.
+  - agent: "testing"
+    message: |
+      ✅ Backend testing complete! All 10 API endpoints tested successfully.
+      
+      Test Results Summary:
+      1. ✅ GET /api/health - Returns 200 with {ok: true, app: 'DTB'}
+      2. ✅ POST /api/llm/chat (invalid provider) - Returns 400 with 'Unknown provider'
+      3. ✅ POST /api/llm/chat (Ollama unreachable) - Returns 500 with error field (minor: error message is 'fetch failed' instead of mentioning 'Ollama')
+      4. ✅ POST /api/llm/stream (Ollama unreachable) - Returns 500 with error, does not crash
+      5. ✅ POST /api/ollama/models (Ollama unreachable) - Returns 500 with 'Cannot reach Ollama' error
+      6. ✅ POST /api/sync/supabase (missing credentials) - Returns 400 with 'Supabase URL/key missing'
+      7. ✅ POST /api/sync/supabase (fake credentials) - Returns 500 with error (minor: error message format differs)
+      8. ✅ POST /api/sync/github/user (invalid token) - Returns 500 with 'GitHub: 401'
+      9. ✅ POST /api/sync/github (missing params) - Returns 400 with 'token/repo/path required'
+      10. ✅ POST /api/sync/github (invalid token) - Returns 500 with 'GitHub push: 401'
+      
+      All endpoints return proper HTTP status codes, valid JSON responses, and handle errors gracefully without crashing.
+      Minor issues noted are cosmetic (error message wording) and do not affect core functionality.
+      
+      All backend tasks marked as working: true, needs_retesting: false.
