@@ -1,12 +1,17 @@
 @echo off
 REM ============================================================
 REM  DTB - Down To Build : Windows All-in-One Installer
-REM  Installs : Node LTS, Yarn, Git, MongoDB, Ollama, project deps
+REM  Installs : Node LTS, Yarn, Git, MongoDB, Ollama, VS Code +
+REM             Cline extension, project deps
 REM  Configures: .env, pulls a coding model, starts the dev server
 REM ============================================================
 
-setlocal EnableDelayedExpansion
+setlocal EnableDelayedExpansion EnableExtensions
 title DTB - Down To Build Installer
+
+REM ---------- Safety net: keep window open whatever happens ----
+REM If something goes wrong the script will jump to :keep_open at the end.
+REM No matter what, the user always sees a "Press any key..." prompt.
 
 REM ---------- Pretty banner ----------
 echo.
@@ -24,8 +29,7 @@ if %errorLevel% NEQ 0 (
     echo [!] This installer needs Administrator privileges.
     echo     Right-click "install.bat" -^> "Run as administrator".
     echo.
-    pause
-    exit /b 1
+    goto :keep_open
 )
 echo [OK] Running as Administrator.
 echo.
@@ -37,8 +41,7 @@ if %errorLevel% NEQ 0 (
     echo [!] winget not found. Please install "App Installer" from the Microsoft Store first:
     echo     ms-windows-store://pdp/?productid=9NBLGGH4NNS1
     echo.
-    pause
-    exit /b 1
+    goto :keep_open
 )
 echo [OK] winget available.
 echo.
@@ -51,8 +54,7 @@ if %errorLevel% NEQ 0 (
     winget install --id OpenJS.NodeJS.LTS -e --silent --accept-package-agreements --accept-source-agreements
     if !errorLevel! NEQ 0 (
         echo [!] Node.js installation failed.
-        pause
-        exit /b 1
+        goto :keep_open
     )
     echo     Refreshing PATH...
     call :refresh_path
@@ -82,8 +84,7 @@ if %errorLevel% NEQ 0 (
     call npm install -g yarn
     if !errorLevel! NEQ 0 (
         echo [!] Yarn install failed.
-        pause
-        exit /b 1
+        goto :keep_open
     )
 ) else (
     for /f "tokens=*" %%v in ('yarn -v') do set YARNV=%%v
@@ -93,36 +94,44 @@ echo.
 
 REM ---------- 5. MongoDB Community ----------
 echo [5/10] Checking MongoDB Community Edition...
+set "MONGO_INSTALLED=0"
 where mongod >nul 2>&1
-if %errorLevel% NEQ 0 (
-    sc query MongoDB >nul 2>&1
-    if !errorLevel! NEQ 0 (
-        echo     Installing MongoDB Community 7.0 via winget...
-        winget install --id MongoDB.Server -e --silent --accept-package-agreements --accept-source-agreements
-        if !errorLevel! NEQ 0 (
-            echo [!] MongoDB install via winget failed.
-            echo     Falling back: download installer manually from:
-            echo     https://www.mongodb.com/try/download/community
-            pause
-        )
-        call :refresh_path
-    )
+if not errorlevel 1 set "MONGO_INSTALLED=1"
+sc query MongoDB >nul 2>&1
+if not errorlevel 1 set "MONGO_INSTALLED=1"
+
+if "%MONGO_INSTALLED%"=="0" (
+    echo     Installing MongoDB Community 7.0 via winget...
+    winget install --id MongoDB.Server -e --silent --accept-package-agreements --accept-source-agreements
+    REM winget can return non-fatal codes like -1978335189 "no applicable update" - ignore
+    call :refresh_path
 ) else (
     echo [OK] MongoDB already installed.
 )
 
-REM Start MongoDB service if installed
+REM Start MongoDB service if registered. Pipes inside (...) break parsing,
+REM so we use a temp var via 'for /f' instead.
 sc query MongoDB >nul 2>&1
-if !errorLevel! EQU 0 (
-    sc query MongoDB | findstr "RUNNING" >nul
-    if !errorLevel! NEQ 0 (
+if not errorlevel 1 (
+    set "MONGO_STATE="
+    for /f "tokens=3 delims=: " %%s in ('sc query MongoDB ^| findstr /i "STATE"') do (
+        if not defined MONGO_STATE set "MONGO_STATE=%%s"
+    )
+    if /I "!MONGO_STATE!"=="RUNNING" (
+        echo [OK] MongoDB service is running.
+    ) else (
         echo     Starting MongoDB service...
         net start MongoDB >nul 2>&1
-    ) else (
-        echo [OK] MongoDB service is running.
+        if errorlevel 1 (
+            echo [!] Could not start MongoDB automatically. Open a terminal and run:
+            echo         net start MongoDB
+        ) else (
+            echo [OK] MongoDB service started.
+        )
     )
 ) else (
-    echo [!] MongoDB service not registered. You may need to start mongod manually.
+    echo [!] MongoDB service not registered. After installation you may need to reboot
+    echo     or run "%ProgramFiles%\MongoDB\Server\7.0\bin\mongod.exe" manually.
 )
 echo.
 
@@ -185,7 +194,10 @@ if %errorLevel% NEQ 0 (
 )
 where code >nul 2>&1
 if %errorLevel% EQU 0 (
-    code --list-extensions 2>nul | findstr /i "saoudrizwan.claude-dev" >nul
+    REM Check if Cline is already installed (pipe inside parens breaks parsing,
+    REM so we redirect to a temp file then findstr it outside).
+    code --list-extensions >"%TEMP%\dtb_vsx.txt" 2>nul
+    findstr /i "saoudrizwan.claude-dev" "%TEMP%\dtb_vsx.txt" >nul 2>&1
     if !errorLevel! NEQ 0 (
         echo     Installing Cline extension (saoudrizwan.claude-dev)...
         code --install-extension saoudrizwan.claude-dev --force
@@ -199,6 +211,7 @@ if %errorLevel% EQU 0 (
     ) else (
         echo [OK] Cline extension already installed.
     )
+    del "%TEMP%\dtb_vsx.txt" >nul 2>&1
 ) else (
     echo [!] Skipping Cline - VS Code not available in PATH.
 )
@@ -213,8 +226,7 @@ if not exist "package.json" (
     echo         git clone ^<your-repo-url^> dtb
     echo         cd dtb
     echo         install.bat
-    pause
-    exit /b 1
+    goto :keep_open
 )
 echo [OK] Found package.json in %CD%.
 
@@ -239,8 +251,7 @@ echo [10/10] Installing JavaScript dependencies with yarn (this can take a few m
 call yarn install
 if !errorLevel! NEQ 0 (
     echo [!] yarn install failed. Check the output above.
-    pause
-    exit /b 1
+    goto :keep_open
 )
 echo.
 echo  =============================================================
@@ -275,8 +286,7 @@ timeout /t 5 /nobreak >nul
 start "" "http://localhost:3000"
 echo  DTB is starting. The browser will open shortly.
 echo.
-pause
-exit /b 0
+goto :keep_open
 
 
 REM ============================================================
@@ -288,3 +298,13 @@ for /f "tokens=2*" %%a in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Ses
 for /f "tokens=2*" %%a in ('reg query "HKCU\Environment" /v PATH 2^>nul ^| findstr /i "PATH"') do set "USRPATH=%%b"
 set "PATH=%SYSPATH%;%USRPATH%"
 goto :eof
+
+REM ============================================================
+REM  Safety net - keeps the cmd window open whatever happened
+REM ============================================================
+:keep_open
+echo.
+echo  ---  End of DTB installer. The window will stay open.  ---
+echo.
+pause
+exit /b 0
