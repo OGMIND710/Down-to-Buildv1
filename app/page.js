@@ -19,12 +19,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { STORAGE_KEY, ACTIVE_KEY, DEFAULT_CODE, newProject, loadSettings, OVERRIDABLE_FIELDS, effectiveSettings } from '@/lib/dtb-store'
+import { STORAGE_KEY, ACTIVE_KEY, DEFAULT_CODE, newProject, loadSettings, OVERRIDABLE_FIELDS, effectiveSettings, OUTPUT_MODES, getSystemPrompt, extractComponent, extractFiles, extractSupabase } from '@/lib/dtb-store'
+import JSZip from 'jszip'
 
-function extractCode(text) {
-  const m = text.match(/```(?:jsx|js|javascript|tsx)?\n?([\s\S]*?)```/)
-  return m ? m[1].trim() : null
-}
+function extractCode(text) { return extractComponent(text) }
 
 function buildIframeSrc(code) {
   const safeCode = (code || '').replace(/<\/script>/g, '<\\/script>')
@@ -138,7 +136,7 @@ export default function App() {
     model: eff.mode === 'ollama' ? eff.ollamaModel : eff.apiModel,
     baseUrl: eff.ollamaUrl,
     apiKey: eff.apiKey,
-    systemPrompt: eff.systemPrompt,
+    systemPrompt: getSystemPrompt(eff.outputMode, eff.systemPrompt),
     messages: msgs.map(m => ({ role: m.role, content: m.content })),
   })
 
@@ -194,7 +192,40 @@ export default function App() {
     updateActive({ messages: baseMessages })
     setInput(''); setLoading(true); setAgentSteps([]); setStreamingText('')
 
+    const isMultiFile = eff.outputMode === 'webcontainer' || eff.outputMode === 'local'
+    const isSupabase = eff.outputMode === 'supabase'
+
     try {
+      // Single shot for multi-file modes (no auto-iteration since we can't run the project to detect errors here)
+      if (isMultiFile) {
+        const content = await callLLM(baseMessages, (t) => setStreamingText(t))
+        const files = extractFiles(content)
+        const aiMsg = { role: 'assistant', content }
+        if (files.length > 0) {
+          updateActive({ messages: [...baseMessages, aiMsg], files })
+          setTab('files'); toast.success(`Generated ${files.length} files`)
+        } else {
+          updateActive({ messages: [...baseMessages, aiMsg] })
+          toast.warning('No file blocks detected (expected ```file:path … ```)')
+        }
+        return
+      }
+
+      // Supabase mode: extract sql + jsx, no auto-iteration on errors (similar to component but with extra SQL state)
+      if (isSupabase) {
+        const content = await callLLM(baseMessages, (t) => setStreamingText(t))
+        const { sql, jsx } = extractSupabase(content)
+        const aiMsg = { role: 'assistant', content }
+        const patch = { messages: [...baseMessages, aiMsg] }
+        if (jsx) patch.code = jsx
+        if (sql) patch.sql = sql
+        updateActive(patch)
+        if (jsx) setTab('preview')
+        toast.success(`Generated ${jsx ? 'component' : ''}${jsx && sql ? ' + ' : ''}${sql ? 'SQL' : ''}`)
+        return
+      }
+
+      // Component mode: existing flow
       if (!eff.agentMode) {
         const content = await callLLM(baseMessages, (t) => setStreamingText(t))
         const code = extractCode(content)
@@ -246,6 +277,42 @@ export default function App() {
     } finally {
       setLoading(false); setStreamingText(''); setTimeout(() => setAgentSteps([]), 4000)
     }
+  }
+
+  // Download project as ZIP (multi-file modes)
+  const handleDownloadZip = async () => {
+    const files = active.files || []
+    if (files.length === 0) { toast.error('No files to download'); return }
+    const zip = new JSZip()
+    files.forEach(f => zip.file(f.path, f.content))
+    const blob = await zip.generateAsync({ type: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `${active.name.replace(/\s+/g, '-')}.zip`; a.click()
+    URL.revokeObjectURL(url)
+    toast.success('ZIP downloaded')
+  }
+
+  // Push all files in a multi-file project to GitHub
+  const handleGitPushAll = async () => {
+    if (!settings?.githubToken || !settings?.githubRepo) { toast.error('Set up GitHub in Settings first'); return }
+    const files = active.files || []
+    if (files.length === 0) { toast.error('No files'); return }
+    toast.info(`Pushing ${files.length} files...`)
+    let ok = 0
+    for (const f of files) {
+      try {
+        const res = await fetch('/api/sync/github', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: settings.githubToken, repo: settings.githubRepo, branch: settings.githubBranch || 'main',
+            path: f.path, content: f.content, message: `DTB: ${active.name} - ${f.path}`,
+          }),
+        })
+        if (res.ok) ok++
+      } catch (e) { /* continue */ }
+    }
+    toast.success(`Pushed ${ok}/${files.length} files to ${settings.githubRepo}`)
   }
 
   const handleGitPush = async () => {
@@ -430,29 +497,85 @@ export default function App() {
                     <TabsList className="bg-neutral-100 dark:bg-neutral-900 h-8">
                       <TabsTrigger value="preview" className="text-xs h-6 data-[state=active]:bg-white data-[state=active]:text-neutral-900 dark:data-[state=active]:bg-neutral-800 dark:data-[state=active]:text-white"><Eye className="h-3.5 w-3.5 mr-1.5" /> Preview</TabsTrigger>
                       <TabsTrigger value="code" className="text-xs h-6 data-[state=active]:bg-white data-[state=active]:text-neutral-900 dark:data-[state=active]:bg-neutral-800 dark:data-[state=active]:text-white"><Code2 className="h-3.5 w-3.5 mr-1.5" /> Code</TabsTrigger>
+                      {(eff.outputMode === 'webcontainer' || eff.outputMode === 'local') && (
+                        <TabsTrigger value="files" className="text-xs h-6 data-[state=active]:bg-white data-[state=active]:text-neutral-900 dark:data-[state=active]:bg-neutral-800 dark:data-[state=active]:text-white">📁 Files ({(active.files || []).length})</TabsTrigger>
+                      )}
+                      {eff.outputMode === 'supabase' && (
+                        <TabsTrigger value="sql" className="text-xs h-6 data-[state=active]:bg-white data-[state=active]:text-neutral-900 dark:data-[state=active]:bg-neutral-800 dark:data-[state=active]:text-white">🗄 SQL</TabsTrigger>
+                      )}
                     </TabsList>
                     <div className="ml-auto flex items-center gap-2">
-                      <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                        onClick={() => { navigator.clipboard.writeText(active.code || ''); toast.success('Copied') }}>Copy</Button>
-                      <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900"
-                        onClick={() => {
-                          const blob = new Blob([active.code || ''], { type: 'text/javascript' })
-                          const url = URL.createObjectURL(blob); const a = document.createElement('a')
-                          a.href = url; a.download = `${active.name.replace(/\s+/g, '-')}.jsx`; a.click(); URL.revokeObjectURL(url)
-                        }}><Download className="h-3.5 w-3.5 mr-1" /> .jsx</Button>
-                      <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900" onClick={handleGitPush}>
-                        <GitBranch className="h-3.5 w-3.5 mr-1" /> Push
-                      </Button>
+                      {eff.outputMode === 'webcontainer' && (active.files || []).length > 0 && (
+                        <Link href={`/run/${active.id}`} target="_blank">
+                          <Button size="sm" className="h-7 text-xs bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
+                            ▶ Run in browser
+                          </Button>
+                        </Link>
+                      )}
+                      {(eff.outputMode === 'webcontainer' || eff.outputMode === 'local') && (active.files || []).length > 0 && (
+                        <>
+                          <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900" onClick={handleDownloadZip}>
+                            <Download className="h-3.5 w-3.5 mr-1" /> ZIP
+                          </Button>
+                          <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900" onClick={handleGitPushAll}>
+                            <GitBranch className="h-3.5 w-3.5 mr-1" /> Push all
+                          </Button>
+                        </>
+                      )}
+                      {eff.outputMode !== 'webcontainer' && eff.outputMode !== 'local' && (
+                        <>
+                          <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900"
+                            onClick={() => { navigator.clipboard.writeText(active.code || ''); toast.success('Copied') }}>Copy</Button>
+                          <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900"
+                            onClick={() => {
+                              const blob = new Blob([active.code || ''], { type: 'text/javascript' })
+                              const url = URL.createObjectURL(blob); const a = document.createElement('a')
+                              a.href = url; a.download = `${active.name.replace(/\s+/g, '-')}.jsx`; a.click(); URL.revokeObjectURL(url)
+                            }}><Download className="h-3.5 w-3.5 mr-1" /> .jsx</Button>
+                          <Button variant="ghost" size="sm" className="h-7 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-900" onClick={handleGitPush}>
+                            <GitBranch className="h-3.5 w-3.5 mr-1" /> Push
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
                   <TabsContent value="preview" className="flex-1 m-0 p-0 bg-neutral-50 dark:bg-neutral-950">
-                    <iframe title="preview" key={active.id + '-' + (active.updatedAt || 0)}
-                      srcDoc={iframeSrc} sandbox="allow-scripts" className="w-full h-full border-0 bg-white" />
+                    {(eff.outputMode === 'webcontainer' || eff.outputMode === 'local') ? (
+                      <div className="h-full flex items-center justify-center text-center p-8">
+                        <div className="max-w-md">
+                          <div className="text-5xl mb-3">{eff.outputMode === 'webcontainer' ? '🚀' : '📦'}</div>
+                          <h3 className="text-lg font-semibold mb-2">
+                            {eff.outputMode === 'webcontainer' ? 'Fullstack project (WebContainer)' : 'Fullstack project (Local)'}
+                          </h3>
+                          <p className="text-sm text-neutral-500 mb-4">
+                            {(active.files || []).length === 0
+                              ? 'Describe what you want to build in the chat. The AI will generate a multi-file Next.js or Express project.'
+                              : eff.outputMode === 'webcontainer'
+                                ? `${active.files.length} files generated. Click "▶ Run in browser" to install dependencies and start the dev server inside your browser via WebContainers.`
+                                : `${active.files.length} files generated. Download the ZIP, then run "yarn install && yarn dev" locally. Or push all files to GitHub.`}
+                          </p>
+                          {eff.outputMode === 'webcontainer' && (active.files || []).length > 0 && (
+                            <Link href={`/run/${active.id}`} target="_blank">
+                              <Button className="bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900">▶ Run in browser</Button>
+                            </Link>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <iframe title="preview" key={active.id + '-' + (active.updatedAt || 0)}
+                        srcDoc={iframeSrc} sandbox="allow-scripts" className="w-full h-full border-0 bg-white" />
+                    )}
                   </TabsContent>
                   <TabsContent value="code" className="flex-1 m-0 p-0 overflow-hidden">
                     <ScrollArea className="h-full bg-neutral-50 dark:bg-neutral-950">
                       <pre className="p-4 text-xs text-neutral-700 dark:text-neutral-300 font-mono leading-relaxed"><code>{active.code}</code></pre>
                     </ScrollArea>
+                  </TabsContent>
+                  <TabsContent value="files" className="flex-1 m-0 p-0 overflow-hidden">
+                    <FileExplorer files={active.files || []} />
+                  </TabsContent>
+                  <TabsContent value="sql" className="flex-1 m-0 p-0 overflow-hidden">
+                    <SqlView sql={active.sql} settings={settings} />
                   </TabsContent>
                 </Tabs>
               </div>
@@ -561,7 +684,7 @@ function Avatar({ role }) {
   )
 }
 function Bubble({ role, content, streaming }) {
-  const display = role === 'assistant' ? content.replace(/```[\s\S]*?```/g, '`[component code → see preview]`').replace(/```[\s\S]*$/g, '`[component code streaming...]`') : content
+  const display = role === 'assistant' ? content.replace(/```[\s\S]*?```/g, '`[generated code → see right panel]`').replace(/```[\s\S]*$/g, '`[generating...]`') : content
   return (
     <div className={`flex gap-2.5 ${role === 'user' ? 'flex-row-reverse' : ''}`}>
       <Avatar role={role} />
@@ -570,6 +693,61 @@ function Bubble({ role, content, streaming }) {
           {display}
           {streaming && <span className="inline-block w-1.5 h-3.5 bg-current ml-0.5 animate-pulse align-middle" />}
         </div>
+      </div>
+    </div>
+  )
+}
+
+function FileExplorer({ files }) {
+  const [selected, setSelected] = useState(0)
+  if (files.length === 0) {
+    return <div className="h-full flex items-center justify-center text-sm text-neutral-500 p-8 text-center">No files yet. Generate a multi-file project from the chat.</div>
+  }
+  const current = files[selected] || files[0]
+  return (
+    <div className="h-full flex">
+      <div className="w-56 border-r border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-950 overflow-y-auto">
+        {files.map((f, i) => (
+          <button key={i} onClick={() => setSelected(i)}
+            className={`w-full text-left px-3 py-1.5 text-xs font-mono truncate hover:bg-neutral-100 dark:hover:bg-neutral-900 ${i === selected ? 'bg-neutral-200 dark:bg-neutral-800 text-neutral-900 dark:text-white' : 'text-neutral-600 dark:text-neutral-400'}`}>
+            {f.path}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 overflow-auto bg-white dark:bg-neutral-950">
+        <div className="px-3 py-1.5 border-b border-neutral-200 dark:border-neutral-800 text-xs font-mono text-neutral-500 sticky top-0 bg-white dark:bg-neutral-950">{current.path}</div>
+        <pre className="p-3 text-xs text-neutral-700 dark:text-neutral-300 font-mono leading-relaxed"><code>{current.content}</code></pre>
+      </div>
+    </div>
+  )
+}
+
+function SqlView({ sql, settings }) {
+  const applySQL = async () => {
+    if (!settings?.supabaseUrl || !settings?.supabaseKey) { toast.error('Configure Supabase in /settings first'); return }
+    if (!sql) return
+    // Supabase REST does not allow arbitrary DDL with anon key. Provide a helpful workflow.
+    await navigator.clipboard.writeText(sql)
+    toast.success('SQL copied. Paste it into the Supabase SQL Editor.')
+    window.open(`${settings.supabaseUrl}/project/_/sql/new`, '_blank')
+  }
+  if (!sql) return <div className="h-full flex items-center justify-center text-sm text-neutral-500 p-8 text-center">No SQL generated yet. Use Supabase mode to get a schema.</div>
+  return (
+    <div className="h-full flex flex-col bg-neutral-50 dark:bg-neutral-950">
+      <div className="px-3 py-2 border-b border-neutral-200 dark:border-neutral-800 flex items-center gap-2">
+        <span className="text-xs font-mono text-neutral-500">schema.sql</span>
+        <div className="ml-auto flex gap-2">
+          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { navigator.clipboard.writeText(sql); toast.success('Copied') }}>Copy</Button>
+          <Button size="sm" className="h-7 text-xs bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900" onClick={applySQL}>
+            Apply to Supabase →
+          </Button>
+        </div>
+      </div>
+      <ScrollArea className="flex-1">
+        <pre className="p-4 text-xs font-mono text-emerald-700 dark:text-emerald-400 leading-relaxed whitespace-pre-wrap">{sql}</pre>
+      </ScrollArea>
+      <div className="text-[10px] text-neutral-500 px-3 py-2 border-t border-neutral-200 dark:border-neutral-800">
+        Note: Supabase REST does not allow arbitrary DDL with anon keys. Clicking <strong>Apply</strong> copies the SQL and opens the Supabase SQL editor where you paste &amp; run it.
       </div>
     </div>
   )

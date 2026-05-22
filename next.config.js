@@ -34,6 +34,14 @@ const nextConfig = {
           { key: "Access-Control-Allow-Headers", value: "*" },
         ],
       },
+      {
+        // WebContainers require cross-origin isolation on the pages where they boot.
+        source: "/run/:path*",
+        headers: [
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
+        ],
+      },
     ];
   },
 };

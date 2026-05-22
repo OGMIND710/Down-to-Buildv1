@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
 import { ArrowLeft, Hammer, Bot, Cloud, Github, FileText, CheckCircle2, XCircle, Loader2, RefreshCw, ExternalLink, Save, RotateCcw } from 'lucide-react'
-import { DEFAULT_SETTINGS, DEFAULT_SYSTEM_PROMPT, SETTINGS_KEY, STORAGE_KEY, loadSettings, saveSettings } from '@/lib/dtb-store'
+import { DEFAULT_SETTINGS, DEFAULT_SYSTEM_PROMPT, SETTINGS_KEY, STORAGE_KEY, loadSettings, saveSettings, OUTPUT_MODES } from '@/lib/dtb-store'
 
 const sections = [
   { id: 'llm', label: 'LLM & Agent', icon: Bot },
@@ -141,7 +141,19 @@ export default function SettingsPage() {
         {/* Content */}
         <main className="col-span-9">
           {section === 'llm' && (
-            <Card title="LLM Provider & Agent" desc="Choose your model and configure the Cline-inspired agent loop.">
+            <Card title="LLM Provider & Agent" desc="Choose your model, output mode, and agent behavior.">
+              <Field label="Output mode" hint="What the AI generates. Per-project override available from the workspace.">
+                <div className="grid grid-cols-2 gap-2">
+                  {OUTPUT_MODES.map(m => (
+                    <button key={m.id} onClick={() => update({ outputMode: m.id })}
+                      className={`text-left p-3 rounded-lg border transition ${s.outputMode === m.id ? 'border-neutral-900 dark:border-white bg-neutral-100 dark:bg-neutral-900' : 'border-neutral-200 dark:border-neutral-800 hover:bg-neutral-50 dark:hover:bg-neutral-900/50'}`}>
+                      <div className="text-sm font-medium">{m.label}</div>
+                      <div className="text-[11px] text-neutral-500 mt-0.5">{m.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </Field>
+              <Separator className="bg-neutral-200 dark:bg-neutral-800" />
               <Field label="Provider mode">
                 <div className="flex gap-1 p-1 bg-neutral-200 dark:bg-neutral-900 rounded-lg w-fit">
                   <ModeBtn active={s.mode === 'ollama'} onClick={() => update({ mode: 'ollama' })}>Ollama (Local)</ModeBtn>

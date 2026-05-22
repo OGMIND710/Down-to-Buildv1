@@ -35,15 +35,19 @@
 ## ✨ Features
 
 - **Split-screen workspace** — chat on the left, live preview / code on the right (resizable).
-- **Cline-inspired Agent Mode** — multi-step loop: generates code, renders it in the iframe, captures errors via `postMessage`, re-prompts to fix, until success or max iterations.
+- **Four output modes** (switchable per global setting OR per project):
+  - **Single Component** — one React component rendered live in a sandboxed iframe (Babel standalone + Tailwind CDN).
+  - **Fullstack (WebContainer)** — multi-file Next.js / Express project that runs **entirely in your browser** via [StackBlitz WebContainers](https://webcontainers.io). `npm install` + dev server inside a virtualized Node.js. No backend infra needed. Free for personal / non-commercial use.
+  - **Fullstack (Local)** — multi-file project you download as ZIP or push to a GitHub repo, then run locally with `yarn dev`.
+  - **Component + Supabase BaaS** — React component **plus** a SQL schema. The AI generates `CREATE TABLE` statements; one click copies the SQL and opens your Supabase SQL Editor.
+- **Cline-inspired Agent Mode** — for single-component modes: generates code, renders it, captures errors via `postMessage`, re-prompts to fix, loops until success or max iterations.
 - **Token-by-token streaming** — Ollama (NDJSON), OpenAI / Groq / OpenRouter (SSE), Anthropic (SSE). Cursor blinks live; **Stop** button to abort.
 - **Multi-project** with local-first persistence (`localStorage`), auto-saved.
 - **LLM agnostic** — Ollama, OpenAI, Anthropic, Groq, OpenRouter.
-- **Dedicated `/settings` page** — 5 sections (LLM & Agent · Ollama · Supabase · GitHub · System Prompt). "Log in" buttons validate Supabase creds and fetch your GitHub username.
-- **Global + per-project overrides** — settings page sets defaults; the in-workspace ⚙ icon next to the project name lets you override any field just for that project (purple "Overridden" badge).
+- **Dedicated `/settings` page** — 5 sections (LLM & Agent · Ollama · Supabase · GitHub · System Prompt) with "Log in / Test" buttons.
+- **Global + per-project overrides** — settings page sets defaults; the slider icon next to a project name opens a dialog to override any field (including `outputMode`).
 - **Supabase cross-device sync** — push/pull projects to a `dtb_projects` table.
-- **GitHub push** — commit the current component as `.jsx` to any repo with one click.
-- **Live preview** in a sandboxed iframe (Babel standalone + Tailwind CDN).
+- **GitHub push** — commit the current component as `.jsx` OR push all files of a multi-file project to any repo.
 - **Modern grey/white UI** built with shadcn/ui + Tailwind.
 
 ---
@@ -539,8 +543,68 @@ yarn electron:build --win --linux --mac
 | `POST` | `/api/llm/stream` | LLM proxy with token streaming |
 | `POST` | `/api/ollama/models` | List local Ollama models |
 | `POST` | `/api/sync/supabase` | `{ action: 'test'\|'push'\|'pull', url, key, projects }` |
-| `POST` | `/api/sync/github` | Push a file to a repo |
+| `POST` | `/api/sync/github` | Push a file (or one of many) to a repo |
 | `POST` | `/api/sync/github/user` | Validate PAT, return user info |
+
+## 🚀 Output modes — deep dive
+
+DTB has **4 output modes** the AI is instructed to follow. Switch in `/settings → LLM & Agent → Output mode`, or override per-project from the workspace.
+
+### 1. Single Component (default)
+
+The AI returns one \`\`\`jsx block defining `function App()`. DTB renders it instantly in an iframe with React + Tailwind from CDN. Agent mode auto-fixes runtime errors.
+
+### 2. Fullstack (WebContainer)
+
+The AI returns multi-file blocks of the form:
+
+\`\`\`
+\`\`\`file:package.json
+{ ... }
+\`\`\`
+\`\`\`file:app/page.js
+export default function Page() { ... }
+\`\`\`
+\`\`\`
+
+DTB shows a file explorer in the right pane. Click **▶ Run in browser** to open `/run/[projectId]`, which:
+
+1. Boots a WebContainer (StackBlitz's Node.js WASM runtime).
+2. Mounts all files into the virtual filesystem.
+3. Runs `npm install` (terminal output streamed live).
+4. Runs `npm run dev` and grabs the preview URL from the `server-ready` event.
+5. Loads the resulting URL into a sandboxed iframe — a full Next.js or Express dev server running in your browser.
+
+**Requirements**:
+- A Chromium-based browser (Chrome, Edge, Brave, Arc). Safari 16.4+ and Firefox have beta support.
+- The `/run/*` route is served with `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (already configured in `next.config.js`).
+- For production, the host must be HTTPS (localhost is exempt).
+
+**Licensing**: WebContainers are **free for personal & non-commercial / proof-of-concept use**. A commercial license is required only for revenue-generating production deployments. See <https://webcontainers.io/enterprise>.
+
+### 3. Fullstack (Local)
+
+Same multi-file output as mode 2, but DTB does **not** run it in the browser. Instead the right pane exposes:
+- **ZIP** — bundle all files (via JSZip) into `your-project.zip` for local extraction.
+- **Push all** — commit every file to the configured GitHub repo via the Contents API (uses your PAT).
+
+Then locally:
+
+```bash
+unzip your-project.zip && cd your-project
+yarn install   # or npm install / pnpm install
+yarn dev
+```
+
+### 4. Component + Supabase BaaS
+
+The AI returns **two** blocks:
+1. \`\`\`sql — the schema (`CREATE TABLE`, RLS policies, etc.).
+2. \`\`\`jsx — a React component that uses a global `supabase` object to read/write data.
+
+The right pane gets an extra **🗄 SQL** tab. Click **Apply to Supabase →** to copy the SQL to clipboard and open `your-project.supabase.co/project/_/sql/new` (Supabase's REST API doesn't allow arbitrary DDL with anon keys; you paste & run manually).
+
+> Future: a service-role variant would let DTB run the SQL automatically via the Supabase Management API.
 
 ---
 
