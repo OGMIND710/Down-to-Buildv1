@@ -3,7 +3,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Loader2, RefreshCw, ExternalLink, AlertTriangle, Play } from 'lucide-react'
+import { Loader2, RefreshCw, ExternalLink, AlertTriangle, Play, Square } from 'lucide-react'
+import { detectWebContainerError } from '@/lib/dtb-store'
+
+// The default port the AI is instructed to use. Hard-coded everywhere so
+// the iframe / server-ready handler is deterministic.
+export const WC_PORT = 3050
 
 function buildFileTree(files) {
   const tree = {}
@@ -20,20 +25,35 @@ function buildFileTree(files) {
   return tree
 }
 
-// Tries to repair common AI mistakes in package.json so npm run dev finds 'next'.
+// Repairs common AI mistakes in package.json so npm run dev finds 'next' and binds to WC_PORT.
 function sanitizePackageJson(content) {
   try {
     const pkg = JSON.parse(content)
     pkg.scripts = pkg.scripts || {}
-    // Force a script that always resolves the binary, even when PATH is weird in jsh.
-    if (pkg.scripts.dev && /^(next|next\s)/.test(pkg.scripts.dev.trim())) {
-      pkg.scripts.dev = 'npx --yes ' + pkg.scripts.dev
+    const ensureNpx = (cmd) => {
+      if (!cmd) return cmd
+      const trimmed = cmd.trim()
+      if (/^npx\s/.test(trimmed)) return trimmed
+      // Bare binary at start → wrap in npx --yes
+      if (/^(next|vite|nodemon|tsx|ts-node|astro|remix|nuxt|webpack|parcel)(\s|$)/.test(trimmed)) {
+        return 'npx --yes ' + trimmed
+      }
+      return trimmed
     }
-    if (!pkg.scripts.dev) {
-      // Best-effort default
-      pkg.scripts.dev = 'npx --yes next dev -p 3000'
+    const forcePort = (cmd, port) => {
+      if (!cmd) return cmd
+      // strip existing -p / --port and append our port
+      let c = cmd.replace(/\s+(-p|--port)\s+\d+/g, '').trim()
+      // Only inject a port flag if we recognise a server binary that supports it
+      if (/(next\s+(dev|start))/.test(c)) c += ` -p ${port}`
+      else if (/(vite)/.test(c) && !/--port/.test(c)) c += ` --port ${port}`
+      return c
     }
-    // Ensure next + react are present when dev mentions next
+    for (const k of Object.keys(pkg.scripts)) {
+      pkg.scripts[k] = forcePort(ensureNpx(pkg.scripts[k]), WC_PORT)
+    }
+    if (!pkg.scripts.dev) pkg.scripts.dev = `npx --yes next dev -p ${WC_PORT}`
+    // Ensure next + react deps exist when dev mentions next
     pkg.dependencies = pkg.dependencies || {}
     if (/next/.test(pkg.scripts.dev)) {
       if (!pkg.dependencies.next) pkg.dependencies.next = '14.2.3'
@@ -42,11 +62,14 @@ function sanitizePackageJson(content) {
     }
     return JSON.stringify(pkg, null, 2)
   } catch (e) {
-    return content // not valid JSON - leave alone
+    return content
   }
 }
 
-export default function WebContainerRunner({ project, compact = false }) {
+export default function WebContainerRunner({ project, compact = false, onLifecycle, runKey }) {
+  // runKey is a parent-provided string (e.g. files-hash). Every time it changes
+  // we tear down and re-mount, so the auto-fix loop in app/page.js can just
+  // patch project.files and bump runKey.
   const [status, setStatus] = useState('idle') // idle | booting | mounting | installing | running | ready | error
   const [previewUrl, setPreviewUrl] = useState(null)
   const [log, setLog] = useState('')
@@ -55,6 +78,9 @@ export default function WebContainerRunner({ project, compact = false }) {
   const wcRef = useRef(null)
   const bootedRef = useRef(false)
   const logEndRef = useRef(null)
+  const bufferRef = useRef('')
+  const lifecycleRef = useRef(onLifecycle)
+  lifecycleRef.current = onLifecycle
 
   useEffect(() => { setIsolated(typeof self !== 'undefined' ? self.crossOriginIsolated : null) }, [])
   useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [log])
@@ -64,16 +90,38 @@ export default function WebContainerRunner({ project, compact = false }) {
     return () => { try { wcRef.current?.teardown?.() } catch (e) {} }
   }, [project?.id])
 
-  const appendLog = (s) => setLog(prev => prev + s)
+  // Auto-restart when runKey changes (auto-fix loop re-mount)
+  useEffect(() => {
+    if (!runKey) return
+    if (status === 'idle') return // nothing booted yet; user clicks Start
+    // Re-run silently
+    ;(async () => {
+      try { await wcRef.current?.teardown?.() } catch (e) {}
+      wcRef.current = null; bootedRef.current = false; setPreviewUrl(null)
+      setStatus('idle'); setLog(''); bufferRef.current = ''
+      setTimeout(() => startContainer(), 50)
+    })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runKey])
+
+  const emit = (evt) => { try { lifecycleRef.current?.(evt) } catch (e) {} }
+
+  const appendLog = (s) => {
+    setLog(prev => prev + s)
+    bufferRef.current += s
+    // Detect fatal errors as they stream in
+    const err = detectWebContainerError(s)
+    if (err) emit({ type: 'error-detected', message: err, buffer: bufferRef.current.slice(-2000) })
+  }
 
   const startContainer = async () => {
     if (!project || !project.files || project.files.length === 0) return
     if (bootedRef.current) return
     bootedRef.current = true
-    setError(null); setStatus('booting'); setLog('')
+    setError(null); setStatus('booting'); setLog(''); bufferRef.current = ''
+    emit({ type: 'boot-start' })
 
     try {
-      // Patch any package.json AI quirks BEFORE mounting
       const sanitizedFiles = project.files.map(f =>
         f.path.endsWith('package.json') ? { ...f, content: sanitizePackageJson(f.content) } : f
       )
@@ -94,7 +142,10 @@ export default function WebContainerRunner({ project, compact = false }) {
       const install = await wc.spawn('npm', ['install'])
       install.output.pipeTo(new WritableStream({ write: (d) => appendLog(d) }))
       const code = await install.exit
-      if (code !== 0) throw new Error(`npm install failed (exit ${code})`)
+      if (code !== 0) {
+        emit({ type: 'install-failed', exitCode: code, buffer: bufferRef.current.slice(-2000) })
+        throw new Error(`npm install failed (exit ${code})`)
+      }
       appendLog('\n✓ Dependencies installed.\n')
 
       const pkgFile = sanitizedFiles.find(f => f.path === 'package.json')
@@ -107,34 +158,53 @@ export default function WebContainerRunner({ project, compact = false }) {
       setStatus('running')
       appendLog(`\n→ Running: npm run ${devScript}\n`)
       const dev = await wc.spawn('npm', ['run', devScript])
+      let fallbackUsed = false
       dev.output.pipeTo(new WritableStream({ write: (d) => {
         appendLog(d)
-        // Fallback: if "command not found" appears in output, try npx
-        if (/command not found/.test(d) && !bootedRef.fallback) {
-          bootedRef.fallback = true
-          appendLog('\n→ Fallback: trying npx --yes next dev directly...\n')
-          wc.spawn('npx', ['--yes', 'next', 'dev', '-p', '3000']).then(p => {
+        if (/command not found/.test(d) && !fallbackUsed) {
+          fallbackUsed = true
+          appendLog(`\n→ Fallback: trying npx --yes next dev -p ${WC_PORT} directly...\n`)
+          wc.spawn('npx', ['--yes', 'next', 'dev', '-p', String(WC_PORT)]).then(p => {
             p.output.pipeTo(new WritableStream({ write: (d2) => appendLog(d2) }))
+            p.exit.then(c => {
+              if (c !== 0) emit({ type: 'dev-exited', exitCode: c, buffer: bufferRef.current.slice(-2000) })
+            })
           })
         }
       } }))
+      // If the dev process ever exits with a code, the parent loop should know
+      dev.exit.then(c => {
+        if (c !== 0) {
+          emit({ type: 'dev-exited', exitCode: c, buffer: bufferRef.current.slice(-2000) })
+          setStatus(prev => prev === 'ready' ? prev : 'error')
+        }
+      })
 
       wc.on('server-ready', (port, url) => {
         appendLog(`\n✓ Server ready at ${url} (port ${port})\n`)
         setPreviewUrl(url); setStatus('ready')
+        emit({ type: 'ready', port, url })
       })
     } catch (e) {
       console.error(e)
       setError(e.message || String(e)); setStatus('error')
       appendLog(`\n✗ Error: ${e.message || e}\n`)
       bootedRef.current = false
+      emit({ type: 'boot-failed', message: e.message || String(e), buffer: bufferRef.current.slice(-2000) })
     }
   }
 
   const restart = async () => {
     if (wcRef.current) { try { await wcRef.current.teardown() } catch (e) {} }
-    wcRef.current = null; bootedRef.current = false; setPreviewUrl(null); setStatus('idle'); setLog('')
+    wcRef.current = null; bootedRef.current = false; setPreviewUrl(null)
+    setStatus('idle'); setLog(''); bufferRef.current = ''
     setTimeout(startContainer, 100)
+  }
+
+  const stop = async () => {
+    if (wcRef.current) { try { await wcRef.current.teardown() } catch (e) {} }
+    wcRef.current = null; bootedRef.current = false; setPreviewUrl(null)
+    setStatus('idle')
   }
 
   if (!project || !project.files || project.files.length === 0) {
@@ -146,6 +216,7 @@ export default function WebContainerRunner({ project, compact = false }) {
       {/* Toolbar */}
       <div className="px-3 py-2 border-b border-neutral-200 flex items-center gap-2 bg-white text-xs">
         <StatusBadge status={status} />
+        <span className="text-[10px] text-neutral-400 font-mono">port {WC_PORT}</span>
         {status === 'idle' && (
           <Button size="sm" onClick={startContainer} className="h-7 text-xs bg-neutral-900 text-white hover:bg-neutral-800">
             <Play className="h-3 w-3 mr-1" /> Start
@@ -154,6 +225,11 @@ export default function WebContainerRunner({ project, compact = false }) {
         {(status === 'ready' || status === 'error') && (
           <Button size="sm" variant="outline" onClick={restart} className="h-7 text-xs border-neutral-300">
             <RefreshCw className="h-3 w-3 mr-1" /> Restart
+          </Button>
+        )}
+        {(status === 'booting' || status === 'mounting' || status === 'installing' || status === 'running') && (
+          <Button size="sm" variant="outline" onClick={stop} className="h-7 text-xs border-red-300 text-red-700 hover:bg-red-50">
+            <Square className="h-3 w-3 mr-1" /> Stop
           </Button>
         )}
         {previewUrl && (
@@ -187,7 +263,7 @@ export default function WebContainerRunner({ project, compact = false }) {
         {/* Preview iframe */}
         <div className="bg-white flex flex-col overflow-hidden">
           <div className="text-[10px] px-2 py-1 border-b border-neutral-200 bg-neutral-50 text-neutral-500 font-mono truncate">
-            {previewUrl || 'preview will appear here once the dev server is ready'}
+            {previewUrl || `preview will appear here once the dev server is ready on port ${WC_PORT}`}
           </div>
           {previewUrl ? (
             <iframe title="WebContainer Preview" src={previewUrl} className="flex-1 w-full border-0"

@@ -273,13 +273,102 @@ frontend:
         comment: |
           Two-layer fix for 'jsh: command not found: next':
           1. lib/dtb-store.js MULTIFILE_FORMAT prompt now explicitly instructs the AI to write
-             "dev": "npx --yes next dev -p 3000" (and similar for vite/nodemon) instead of bare binaries.
+             "dev": "npx --yes next dev -p 3050" (and similar for vite/nodemon) instead of bare binaries.
           2. components/WebContainerRunner.jsx sanitizePackageJson() patches any package.json the LLM
              still emits with bare next/vite/nodemon by prepending 'npx --yes ' before mounting.
           3. A runtime fallback in WebContainerRunner watches dev output for 'command not found' and
-             auto-spawns 'npx --yes next dev -p 3000' as a recovery.
-          Manual test: generate a Next.js project in WebContainer mode, expect the dev server to start
-          without 'command not found'.
+             auto-spawns 'npx --yes next dev -p 3050' as a recovery.
+
+  - task: "WebContainer port 3050 (deterministic)"
+    implemented: true
+    working: "NA"
+    file: "components/WebContainerRunner.jsx + lib/dtb-store.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          - WC_PORT constant = 3050 in WebContainerRunner.jsx.
+          - sanitizePackageJson() rewrites any -p / --port flag to ${WC_PORT} for next/vite scripts.
+          - System prompt MULTIFILE_FORMAT instructs AI to always use port 3050.
+          - Toolbar shows "port 3050" badge.
+
+  - task: "Auto-fix loop for WebContainer (Cline workflow on multi-file)"
+    implemented: true
+    working: "NA"
+    file: "app/page.js + components/WebContainerRunner.jsx + lib/dtb-store.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Cline-style iterative agent for WebContainer mode:
+          1. WebContainerRunner.jsx accepts onLifecycle({type, ...}) callback. Emits 'ready', 'error-detected'
+             (matched via detectWebContainerError() heuristics: missing pages/app dir, Module not found,
+             Cannot find module, SyntaxError, TypeError, command not found, Failed to compile, etc.),
+             'dev-exited' (non-zero exit code), 'install-failed', 'boot-failed'.
+          2. WebContainerRunner accepts a `runKey` prop and tears down + re-mounts when it changes.
+          3. app/page.js handleSend() multi-file branch is now a full loop:
+             generate → check QUESTION/SEARCH tags → mount → waitForWcOutcome (90s) → on error, feed last
+             2KB of terminal output back to the LLM and re-prompt for ALL files corrected.
+          4. Default settings: unlimitedIterations=true, softIterationCap=15.
+          5. After softCap iterations without success, a PauseChoiceBubble appears with 4 buttons:
+             "Try N more", "Search the web first", "Restart fresh", "Stop".
+
+  - task: "Agentic tools: <DTB:QUESTION> and <DTB:SEARCH> tags"
+    implemented: true
+    working: "NA"
+    file: "lib/dtb-store.js + app/page.js + app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          - System prompt SHARED_BASE now contains an "Agentic Tools" section documenting both tags.
+          - extractQuestion(text) and extractSearch(text) parsers in lib/dtb-store.js.
+          - When LLM emits <DTB:QUESTION>...</DTB:QUESTION>, page.js shows a QuestionBubble with an Input
+            field and Send/Cancel buttons. The user's answer is fed back to the LLM as the next message.
+          - When LLM emits <DTB:SEARCH>query</DTB:SEARCH>, page.js calls /api/search → SearxNG, formats
+            top results, and feeds them back to the LLM. Loop continues seamlessly.
+          - Backend route /api/search proxies to user's SearxNG instance (default http://localhost:8080).
+            Returns slim {title, url, snippet} list. Defaults to 5 results.
+
+  - task: "SearxNG settings page"
+    implemented: true
+    working: "NA"
+    file: "app/settings/page.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New "Web Search" section in /settings with toggle, URL input (default http://localhost:8080),
+          and a "Test connection" button that hits /api/search with a sample query.
+
+backend:
+  - task: "Web search /api/search (SearxNG proxy)"
+    implemented: true
+    working: "NA"
+    file: "app/api/[[...path]]/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          POST /api/search { query, searxngUrl, limit } → proxies to <searxngUrl>/search?q=...&format=json.
+          Returns { query, results: [{ title, url, snippet, engine }] } trimmed to limit.
+          Manually verified: returns 400 if query missing; returns 500 with 'Cannot reach SearxNG' for
+          unreachable URL (tested via curl with 127.0.0.1:1).
 
 metadata:
   created_by: "main_agent"

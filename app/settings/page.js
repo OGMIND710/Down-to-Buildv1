@@ -10,12 +10,13 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
-import { ArrowLeft, Hammer, Bot, Cloud, Github, FileText, CheckCircle2, XCircle, Loader2, RefreshCw, ExternalLink, Save, RotateCcw } from 'lucide-react'
+import { ArrowLeft, Hammer, Bot, Cloud, Github, FileText, CheckCircle2, XCircle, Loader2, RefreshCw, ExternalLink, Save, RotateCcw, Search } from 'lucide-react'
 import { DEFAULT_SETTINGS, DEFAULT_SYSTEM_PROMPT, SETTINGS_KEY, STORAGE_KEY, loadSettings, saveSettings, OUTPUT_MODES } from '@/lib/dtb-store'
 
 const sections = [
   { id: 'llm', label: 'LLM & Agent', icon: Bot },
   { id: 'ollama', label: 'Ollama', icon: Hammer },
+  { id: 'search', label: 'Web Search', icon: Search },
   { id: 'supabase', label: 'Supabase', icon: Cloud },
   { id: 'github', label: 'GitHub', icon: Github },
   { id: 'prompt', label: 'System Prompt', icon: FileText },
@@ -201,6 +202,9 @@ export default function SettingsPage() {
                       <input type="range" min={1} max={20} value={s.maxIterations} onChange={(e) => update({ maxIterations: parseInt(e.target.value) })} className="w-full max-w-md accent-neutral-900 dark:accent-white" />
                     </Field>
                   )}
+                  <Field label={`Soft cap: ${s.softIterationCap || 15}`} hint="Multi-file (WebContainer) loop only. After this many failed boot attempts, the agent pauses and asks you how to proceed (retry / search the web / restart / stop).">
+                    <input type="range" min={3} max={50} value={s.softIterationCap || 15} onChange={(e) => update({ softIterationCap: parseInt(e.target.value) })} className="w-full max-w-md accent-neutral-900 dark:accent-white" />
+                  </Field>
                 </>
               )}
               <Field label="Streaming" hint="Stream tokens as they arrive (Ollama / OpenAI / Anthropic / Groq / OpenRouter).">
@@ -236,6 +240,41 @@ export default function SettingsPage() {
               <div className="text-xs text-neutral-500 mt-4 p-3 bg-neutral-100 dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-800">
                 <div className="font-mono">$ curl -fsSL https://ollama.com/install.sh | sh</div>
                 <div className="font-mono">$ ollama pull qwen2.5-coder:7b</div>
+              </div>
+            </Card>
+          )}
+
+          {section === 'search' && (
+            <Card title="SearxNG (Web Search)" desc="The agent can call <DTB:SEARCH>query</DTB:SEARCH> when it needs up-to-date info. The query is sent to your SearxNG instance.">
+              <Field label="Enable Web Search">
+                <div className="flex items-center gap-3">
+                  <Switch checked={!!s.searxngEnabled} onCheckedChange={(v) => update({ searxngEnabled: v })} />
+                  <span className="text-sm text-neutral-500">{s.searxngEnabled ? 'Agent can search the web' : 'Search tag will be ignored'}</span>
+                </div>
+              </Field>
+              <Field label="SearxNG Base URL" hint="The /search endpoint must return JSON (default for SearxNG with format=json enabled).">
+                <Input value={s.searxngUrl} onChange={(e) => update({ searxngUrl: e.target.value })} placeholder="http://localhost:8080" className="max-w-md" />
+              </Field>
+              <Button onClick={async () => {
+                setTesting(t => ({ ...t, search: true }))
+                try {
+                  const res = await fetch('/api/search', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'next.js 14 hello world', searxngUrl: s.searxngUrl, limit: 3 }) })
+                  const j = await res.json()
+                  if (!res.ok) throw new Error(j.error)
+                  setStatus(st => ({ ...st, search: { ok: true, msg: `${j.results?.length || 0} results returned` } }))
+                  toast.success(`SearxNG OK — ${j.results?.length || 0} results`)
+                } catch (e) {
+                  setStatus(st => ({ ...st, search: { ok: false, msg: e.message } }))
+                  toast.error(e.message)
+                } finally { setTesting(t => ({ ...t, search: false })) }
+              }} disabled={testing.search || !s.searxngUrl} className="bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
+                {testing.search ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Search className="h-4 w-4 mr-2" />} Test connection
+              </Button>
+              {status.search && <StatusLine ok={status.search.ok} msg={status.search.msg} />}
+              <div className="text-xs text-neutral-500 mt-4 p-3 bg-neutral-100 dark:bg-neutral-900 rounded-lg border border-neutral-200 dark:border-neutral-800">
+                <div className="font-medium mb-1">Quick setup (Docker):</div>
+                <div className="font-mono text-[11px]">docker run --rm -d -p 8080:8080 --name searxng searxng/searxng</div>
+                <div className="mt-2 text-[11px]">SearxNG aggregates ~70 search engines without tracking. Add <code className="font-mono">- json</code> under <code className="font-mono">search.formats</code> in <code className="font-mono">settings.yml</code> if JSON isn&apos;t enabled.</div>
               </div>
             </Card>
           )}

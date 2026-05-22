@@ -209,6 +209,35 @@ async function handleOllamaModels(body) {
   }
 }
 
+// SearxNG (self-hosted meta search). The frontend hits us; we proxy to
+// SearxNG so that browser CORS isn't a concern. Returns a slim list of
+// {title, url, snippet} that the agent loop will turn back into a system
+// prompt extension on the next iteration.
+async function handleSearch(body) {
+  const { query, searxngUrl, limit } = body
+  if (!query || !query.trim()) return NextResponse.json({ error: 'query required' }, { status: 400 })
+  const base = (searxngUrl || 'http://localhost:8080').replace(/\/$/, '')
+  const url = `${base}/search?q=${encodeURIComponent(query)}&format=json&safesearch=0`
+  try {
+    const res = await fetch(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'DTB/1.0' } })
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '')
+      return NextResponse.json({ error: `SearxNG ${res.status}: ${txt.slice(0, 200)}` }, { status: 500 })
+    }
+    const j = await res.json()
+    const max = Math.min(Math.max(parseInt(limit) || 5, 1), 20)
+    const results = (j.results || []).slice(0, max).map(r => ({
+      title: r.title || '',
+      url: r.url || '',
+      snippet: (r.content || '').slice(0, 400),
+      engine: r.engine || '',
+    }))
+    return NextResponse.json({ query, results })
+  } catch (e) {
+    return NextResponse.json({ error: `Cannot reach SearxNG at ${base}: ${e.message}` }, { status: 500 })
+  }
+}
+
 export async function POST(request, { params }) {
   const path = params.path?.join('/') || ''
   try {
@@ -219,6 +248,7 @@ export async function POST(request, { params }) {
     if (path === 'sync/github') return await handleGitHubPush(body)
     if (path === 'sync/github/user') return await handleGitHubUser(body)
     if (path === 'ollama/models') return await handleOllamaModels(body)
+    if (path === 'search') return await handleSearch(body)
     return NextResponse.json({ error: 'Not found' }, { status: 404 })
   } catch (err) {
     return NextResponse.json({ error: err.message }, { status: 500 })

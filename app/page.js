@@ -19,7 +19,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { STORAGE_KEY, ACTIVE_KEY, DEFAULT_CODE, newProject, loadSettings, OVERRIDABLE_FIELDS, effectiveSettings, OUTPUT_MODES, getSystemPrompt, extractComponent, extractFiles, extractSupabase } from '@/lib/dtb-store'
+import { STORAGE_KEY, ACTIVE_KEY, DEFAULT_CODE, newProject, loadSettings, OVERRIDABLE_FIELDS, effectiveSettings, OUTPUT_MODES, getSystemPrompt, extractComponent, extractFiles, extractSupabase, extractQuestion, extractSearch } from '@/lib/dtb-store'
 import JSZip from 'jszip'
 import dynamic from 'next/dynamic'
 
@@ -27,6 +27,8 @@ import dynamic from 'next/dynamic'
 // We import it dynamically with ssr:false so the WebContainer SDK is never bundled
 // for server rendering (it requires window/SharedArrayBuffer).
 const WebContainerRunner = dynamic(() => import('@/components/WebContainerRunner'), { ssr: false })
+
+const WC_PORT = 3050
 
 function extractCode(text) { return extractComponent(text) }
 
@@ -125,6 +127,13 @@ export default function App() {
   const chatEndRef = useRef(null)
   const lastErrorRef = useRef(null)
   const abortRef = useRef(null)
+
+  // Multi-file auto-fix loop state
+  const [wcRunKey, setWcRunKey] = useState(0)
+  const [pendingQuestion, setPendingQuestion] = useState(null) // { text, resolve }
+  const [pendingPause, setPendingPause] = useState(null)       // { iter, lastError, resolve }
+  const wcReadyRef = useRef(false)
+  const wcErrorRef = useRef('')
 
   useEffect(() => {
     try {
@@ -241,6 +250,58 @@ export default function App() {
 
   const handleStop = () => { abortRef.current?.abort(); setLoading(false); toast.info('Stopped') }
 
+  // === Agentic helpers (used by both Single Component and Fullstack loops) ===
+
+  // POST /api/search → SearxNG → { results: [{title,url,snippet}] }
+  const runSearch = async (query) => {
+    try {
+      const res = await fetch('/api/search', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, searxngUrl: settings.searxngUrl }),
+      })
+      const j = await res.json()
+      if (!res.ok) return { error: j.error || 'Search failed', results: [] }
+      return j
+    } catch (e) { return { error: e.message, results: [] } }
+  }
+
+  const formatSearchResults = (sr) => {
+    if (sr.error) return `Search failed: ${sr.error}\n\nPlease ignore the <DTB:SEARCH> result and continue with your best guess.`
+    if (!sr.results || sr.results.length === 0) return `No results for "${sr.query}". Continue with best guess.`
+    return sr.results.map((r, i) => `[${i + 1}] ${r.title}\n${r.url}\n${r.snippet}`).join('\n\n')
+  }
+
+  // Lifecycle events emitted by WebContainerRunner (mounted via ref-pattern below)
+  const wcLifecycle = useCallback((evt) => {
+    if (evt.type === 'ready') { wcReadyRef.current = true; wcErrorRef.current = '' }
+    else if (['error-detected', 'dev-exited', 'install-failed', 'boot-failed'].includes(evt.type)) {
+      if (!wcReadyRef.current) wcErrorRef.current = (evt.message || evt.type) + '\n\n--- last 2KB of output ---\n' + (evt.buffer || '')
+    }
+  }, [])
+
+  // Wait for the WebContainer to either become ready or error out (or timeout).
+  const waitForWcOutcome = (maxMs = 90000) => new Promise((resolve) => {
+    const start = Date.now()
+    const tick = () => {
+      if (abortRef.current?.signal?.aborted) return resolve({ kind: 'abort' })
+      if (wcReadyRef.current) return resolve({ kind: 'ready' })
+      if (wcErrorRef.current) return resolve({ kind: 'error', message: wcErrorRef.current })
+      if (Date.now() - start > maxMs) return resolve({ kind: 'timeout', message: `No "server-ready" event after ${Math.round(maxMs/1000)}s.` })
+      setTimeout(tick, 500)
+    }
+    tick()
+  })
+
+  // Promise resolver for the QUESTION bubble
+  const askUser = (text) => new Promise((resolve) => {
+    setPendingQuestion({ text, resolve: (answer) => { setPendingQuestion(null); resolve(answer) } })
+  })
+
+  // Promise resolver for the PAUSE bubble (after softCap iterations)
+  const askPauseChoice = (iter, lastError) => new Promise((resolve) => {
+    setPendingPause({ iter, lastError, resolve: (choice) => { setPendingPause(null); resolve(choice) } })
+  })
+
   const handleSend = async () => {
     if (!input.trim() || loading || !active || !settings) return
     const userMsg = { role: 'user', content: input.trim() }
@@ -254,20 +315,138 @@ export default function App() {
     const isSupabase = eff.outputMode === 'supabase'
 
     try {
-      // Single shot for multi-file modes (no auto-iteration since we can't run the project to detect errors here)
+      // ============ MULTI-FILE MODES (webcontainer / local) ============
+      // Full Cline-style iterative loop: handles QUESTION/SEARCH tags,
+      // mounts files in the WebContainer, listens for errors, and re-prompts
+      // the LLM with the captured stderr until "server-ready" or the user
+      // stops it via the pause bubble.
       if (isMultiFile) {
-        const content = await callLLM(baseMessages, (t) => setStreamingText(t))
-        const files = extractFiles(content)
-        const aiMsg = { role: 'assistant', content }
-        if (files.length > 0) {
-          updateActive({ messages: [...baseMessages, aiMsg], files })
-          // WebContainer mode → jump to Preview so the embedded runner is visible;
-          // Local zip mode → jump to Files explorer (user must download / push).
-          setTab(eff.outputMode === 'webcontainer' ? 'preview' : 'files')
-          toast.success(`Generated ${files.length} files`)
-        } else {
-          updateActive({ messages: [...baseMessages, aiMsg] })
-          toast.warning('No file blocks detected (expected ```file:path … ```)')
+        let convMessages = baseMessages.slice()
+        const softCap = Math.max(1, parseInt(eff.softIterationCap) || 15)
+        let iter = 0
+        let success = false
+        let lastContent = ''
+
+        // For 'local' mode we don't actually boot a WebContainer; we just
+        // generate files once (no auto-fix loop). Behaviour preserved.
+        if (eff.outputMode === 'local') {
+          const content = await callLLM(convMessages, (t) => setStreamingText(t))
+          const files = extractFiles(content)
+          const aiMsg = { role: 'assistant', content }
+          if (files.length > 0) {
+            updateActive({ messages: [...baseMessages, aiMsg], files })
+            setTab('files'); toast.success(`Generated ${files.length} files`)
+          } else {
+            updateActive({ messages: [...baseMessages, aiMsg] })
+            toast.warning('No file blocks detected')
+          }
+          return
+        }
+
+        // ---- webcontainer auto-fix loop ----
+        while (true) {
+          if (abortRef.current?.signal?.aborted) {
+            setAgentSteps(s => [...s, { kind: 'warn', label: 'Stopped by user' }]); break
+          }
+          setAgentSteps(s => [...s, { kind: 'thinking', label: iter === 0 ? 'Generating files…' : `Iteration ${iter + 1}: re-generating with error feedback` }])
+          setStreamingText('')
+          const content = await callLLM(convMessages, (t) => setStreamingText(t))
+          lastContent = content
+          setStreamingText('')
+
+          // 1) Did the agent ask a question?
+          const question = extractQuestion(content)
+          if (question) {
+            setAgentSteps(s => [...s, { kind: 'thinking', label: '❓ Agent is asking a question' }])
+            const answer = await askUser(question)
+            if (!answer || abortRef.current?.signal?.aborted) {
+              setAgentSteps(s => [...s, { kind: 'warn', label: 'Question cancelled' }]); break
+            }
+            convMessages = [...convMessages, { role: 'assistant', content }, { role: 'user', content: answer }]
+            iter++; continue
+          }
+
+          // 2) Did the agent request a web search?
+          const searchQuery = extractSearch(content)
+          if (searchQuery) {
+            setAgentSteps(s => [...s, { kind: 'thinking', label: `🔍 Searching: ${searchQuery}` }])
+            const sr = await runSearch(searchQuery)
+            const formatted = formatSearchResults({ query: searchQuery, ...sr })
+            setAgentSteps(s => [...s, { kind: 'ok', label: `📚 ${sr.results?.length || 0} results retrieved` }])
+            convMessages = [
+              ...convMessages,
+              { role: 'assistant', content },
+              { role: 'user', content: `Search results for "${searchQuery}":\n\n${formatted}\n\nNow continue the original task using these results.` },
+            ]
+            iter++; continue
+          }
+
+          // 3) Extract files
+          const files = extractFiles(content)
+          if (files.length === 0) {
+            setAgentSteps(s => [...s, { kind: 'warn', label: 'No ```file:path blocks in response — asking again' }])
+            convMessages = [
+              ...convMessages,
+              { role: 'assistant', content },
+              { role: 'user', content: 'Your response had NO ```file:path… ``` blocks. Re-emit the FULL multi-file project. For Next.js include AT LEAST package.json, app/layout.js, app/page.js.' },
+            ]
+            iter++; if (iter >= softCap) {
+              const choice = await askPauseChoice(iter, 'No file blocks detected in 15 generations'); if (choice === 'stop') break
+            }
+            continue
+          }
+
+          // 4) Apply files and remount WebContainer
+          wcReadyRef.current = false
+          wcErrorRef.current = ''
+          updateActive({ files, messages: [...baseMessages, { role: 'assistant', content }] })
+          setTab('preview')
+          setWcRunKey(k => k + 1)
+          setAgentSteps(s => [...s, { kind: 'render', label: `📁 Mounted ${files.length} files — booting WebContainer (port ${WC_PORT})` }])
+
+          // 5) Wait for outcome
+          const outcome = await waitForWcOutcome(120000)
+          if (outcome.kind === 'abort') { setAgentSteps(s => [...s, { kind: 'warn', label: 'Stopped by user' }]); break }
+          if (outcome.kind === 'ready') {
+            setAgentSteps(s => [...s, { kind: 'ok', label: `✓ App running on port ${WC_PORT}!` }])
+            success = true; break
+          }
+          const errMsg = (outcome.message || 'unknown error').slice(0, 2500)
+          setAgentSteps(s => [...s, { kind: 'err', label: `✗ ${errMsg.split('\n')[0].slice(0, 160)}` }])
+          iter++
+
+          // 6) Soft cap: ask the user how to proceed
+          if (iter >= softCap) {
+            const choice = await askPauseChoice(iter, errMsg)
+            if (choice === 'stop') break
+            if (choice === 'retry-fresh') {
+              // restart conversation from the original user prompt
+              convMessages = baseMessages.slice()
+              iter = 0
+              setAgentSteps(s => [...s, { kind: 'thinking', label: '↻ Restarting from scratch' }])
+              continue
+            }
+            if (choice === 'search-first') {
+              convMessages = [
+                ...convMessages,
+                { role: 'assistant', content },
+                { role: 'user', content: `The WebContainer keeps failing after ${iter} attempts. Latest error:\n\n${errMsg}\n\nBefore retrying, emit a <DTB:SEARCH> query to look up the cause of this error on the web.` },
+              ]
+              continue
+            }
+            // 'continue' just resets the cap counter implicitly (we keep iter, but the cap check fires every softCap iterations)
+          }
+
+          // 7) Default: feed error back to LLM
+          convMessages = [
+            ...convMessages,
+            { role: 'assistant', content },
+            { role: 'user', content: `The WebContainer dev server FAILED to start. Latest output:\n\n${errMsg}\n\nReturn ALL files corrected (do NOT skip any). Requirements:\n- Port must be ${WC_PORT}\n- For Next.js you MUST include app/page.js AND app/layout.js\n- Use "npx --yes next dev -p ${WC_PORT}" in package.json scripts\n- Do not change tech stack unless the error requires it` },
+          ]
+        }
+
+        if (!success && abortRef.current && !abortRef.current.signal.aborted) {
+          updateActive({ messages: [...(active.messages || []), userMsg, { role: 'assistant', content: lastContent }] })
         }
         return
       }
@@ -527,6 +706,12 @@ export default function App() {
                         ))}
                       </div>
                     )}
+                    {pendingQuestion && (
+                      <QuestionBubble text={pendingQuestion.text} onAnswer={pendingQuestion.resolve} />
+                    )}
+                    {pendingPause && (
+                      <PauseChoiceBubble iter={pendingPause.iter} lastError={pendingPause.lastError} onChoice={pendingPause.resolve} />
+                    )}
                     <div ref={chatEndRef} />
                   </div>
                 </ScrollArea>
@@ -628,7 +813,7 @@ export default function App() {
                           </div>
                         </div>
                       ) : (
-                        <WebContainerRunner project={active} compact />
+                        <WebContainerRunner project={active} compact runKey={wcRunKey} onLifecycle={wcLifecycle} />
                       )
                     ) : eff.outputMode === 'local' ? (
                       <div className="h-full flex items-center justify-center text-center p-8">
@@ -829,6 +1014,52 @@ function SqlView({ sql, settings }) {
       </ScrollArea>
       <div className="text-[10px] text-neutral-500 px-3 py-2 border-t border-neutral-200 dark:border-neutral-800">
         Note: Supabase REST does not allow arbitrary DDL with anon keys. Clicking <strong>Apply</strong> copies the SQL and opens the Supabase SQL editor where you paste &amp; run it.
+      </div>
+    </div>
+  )
+}
+
+
+function QuestionBubble({ text, onAnswer }) {
+  const [val, setVal] = useState('')
+  const submit = () => { if (val.trim()) onAnswer(val.trim()) }
+  return (
+    <div className="ml-10 my-2 p-3 rounded-xl border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/30">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-300 mb-1.5">🤔 Agent has a question</div>
+      <div className="text-sm text-neutral-800 dark:text-neutral-200 whitespace-pre-wrap mb-2">{text}</div>
+      <div className="flex gap-2">
+        <Input value={val} onChange={(e) => setVal(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submit() }}
+          placeholder="Your answer..." className="h-8 text-sm bg-white dark:bg-neutral-900" autoFocus />
+        <Button size="sm" onClick={submit} className="h-8 bg-blue-600 text-white hover:bg-blue-700">Send</Button>
+        <Button size="sm" variant="ghost" onClick={() => onAnswer('')} className="h-8 text-neutral-500">Cancel</Button>
+      </div>
+    </div>
+  )
+}
+
+function PauseChoiceBubble({ iter, lastError, onChoice }) {
+  return (
+    <div className="ml-10 my-2 p-3 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/30">
+      <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-300 mb-1.5">⏸ Pause — {iter} iterations, still failing</div>
+      <div className="text-xs text-neutral-700 dark:text-neutral-300 mb-2">
+        Latest error:
+      </div>
+      <pre className="text-[10px] font-mono bg-white dark:bg-neutral-900 rounded p-2 mb-3 max-h-40 overflow-auto whitespace-pre-wrap text-red-700 dark:text-red-300">{(lastError || '').slice(0, 1500)}</pre>
+      <div className="text-xs text-neutral-700 dark:text-neutral-300 mb-2">How do you want to proceed?</div>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={() => onChoice('continue')} className="h-8 bg-amber-600 text-white hover:bg-amber-700 text-xs">
+          ↻ Try {iter} more iterations
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => onChoice('search-first')} className="h-8 border-amber-400 text-amber-800 dark:text-amber-200 text-xs">
+          🔍 Search the web first, then retry
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => onChoice('retry-fresh')} className="h-8 border-amber-400 text-amber-800 dark:text-amber-200 text-xs">
+          🆕 Restart from scratch (drop conversation)
+        </Button>
+        <Button size="sm" variant="outline" onClick={() => onChoice('stop')} className="h-8 border-red-300 text-red-700 dark:text-red-300 text-xs">
+          ✗ Stop
+        </Button>
       </div>
     </div>
   )
