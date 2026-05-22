@@ -31,7 +31,7 @@ echo [OK] Running as Administrator.
 echo.
 
 REM ---------- 1. Check / install winget ----------
-echo [1/9] Checking winget...
+echo [1/10] Checking winget...
 where winget >nul 2>&1
 if %errorLevel% NEQ 0 (
     echo [!] winget not found. Please install "App Installer" from the Microsoft Store first:
@@ -44,7 +44,7 @@ echo [OK] winget available.
 echo.
 
 REM ---------- 2. Node.js LTS ----------
-echo [2/9] Checking Node.js...
+echo [2/10] Checking Node.js...
 where node >nul 2>&1
 if %errorLevel% NEQ 0 (
     echo     Installing Node.js LTS via winget...
@@ -63,7 +63,7 @@ if %errorLevel% NEQ 0 (
 echo.
 
 REM ---------- 3. Git ----------
-echo [3/9] Checking Git...
+echo [3/10] Checking Git...
 where git >nul 2>&1
 if %errorLevel% NEQ 0 (
     echo     Installing Git via winget...
@@ -75,7 +75,7 @@ if %errorLevel% NEQ 0 (
 echo.
 
 REM ---------- 4. Yarn ----------
-echo [4/9] Checking Yarn...
+echo [4/10] Checking Yarn...
 where yarn >nul 2>&1
 if %errorLevel% NEQ 0 (
     echo     Installing Yarn globally via npm...
@@ -92,7 +92,7 @@ if %errorLevel% NEQ 0 (
 echo.
 
 REM ---------- 5. MongoDB Community ----------
-echo [5/9] Checking MongoDB Community Edition...
+echo [5/10] Checking MongoDB Community Edition...
 where mongod >nul 2>&1
 if %errorLevel% NEQ 0 (
     sc query MongoDB >nul 2>&1
@@ -127,7 +127,7 @@ if !errorLevel! EQU 0 (
 echo.
 
 REM ---------- 6. Ollama ----------
-echo [6/9] Checking Ollama...
+echo [6/10] Checking Ollama...
 where ollama >nul 2>&1
 if %errorLevel% NEQ 0 (
     echo     Ollama not found. Installing via winget...
@@ -167,8 +167,45 @@ if !errorLevel! EQU 0 (
 )
 echo.
 
-REM ---------- 7. Project setup ----------
-echo [7/9] Setting up DTB project...
+REM ---------- 7. Cline VS Code extension ----------
+echo [7/10] Checking VS Code and installing Cline extension...
+where code >nul 2>&1
+if %errorLevel% NEQ 0 (
+    echo [!] VS Code 'code' command not found.
+    echo     Cline runs INSIDE VS Code. Install VS Code first:
+    echo         https://code.visualstudio.com/download
+    echo     Then re-run this installer, or install manually with:
+    echo         code --install-extension saoudrizwan.claude-dev
+    echo.
+    set /p VSI="    Try to install VS Code via winget now? [y/N]: "
+    if /I "!VSI!"=="y" (
+        winget install --id Microsoft.VisualStudioCode -e --silent --accept-package-agreements --accept-source-agreements
+        call :refresh_path
+    )
+)
+where code >nul 2>&1
+if %errorLevel% EQU 0 (
+    code --list-extensions 2>nul | findstr /i "saoudrizwan.claude-dev" >nul
+    if !errorLevel! NEQ 0 (
+        echo     Installing Cline extension (saoudrizwan.claude-dev)...
+        code --install-extension saoudrizwan.claude-dev --force
+        if !errorLevel! EQU 0 (
+            echo [OK] Cline extension installed.
+            echo     To wire it to Ollama: open VS Code, Cline panel, gear icon,
+            echo     API Provider: Ollama, Base URL: http://localhost:11434
+        ) else (
+            echo [!] Cline install returned non-zero. You can install manually later.
+        )
+    ) else (
+        echo [OK] Cline extension already installed.
+    )
+) else (
+    echo [!] Skipping Cline - VS Code not available in PATH.
+)
+echo.
+
+REM ---------- 8. Project setup ----------
+echo [8/10] Setting up DTB project...
 if not exist "package.json" (
     echo [!] package.json NOT FOUND in current directory.
     echo     Run this installer from the root of the DTB project ^(where package.json lives^).
@@ -182,7 +219,7 @@ if not exist "package.json" (
 echo [OK] Found package.json in %CD%.
 
 REM ---------- 8. .env file ----------
-echo [8/9] Configuring environment variables...
+echo [9/10] Configuring environment variables...
 if exist ".env" (
     echo [OK] .env already exists - leaving it untouched.
 ) else (
@@ -197,8 +234,8 @@ if exist ".env" (
 )
 echo.
 
-REM ---------- 9. Install JS deps ----------
-echo [9/9] Installing JavaScript dependencies with yarn (this can take a few minutes)...
+REM ---------- 10. Install JS deps ----------
+echo [10/10] Installing JavaScript dependencies with yarn (this can take a few minutes)...
 call yarn install
 if !errorLevel! NEQ 0 (
     echo [!] yarn install failed. Check the output above.

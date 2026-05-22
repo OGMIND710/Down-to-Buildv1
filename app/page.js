@@ -420,12 +420,15 @@ export default function App() {
                           <Hammer className="h-6 w-6 text-white dark:text-neutral-900" />
                         </div>
                         <h3 className="text-base font-semibold mb-1">Down To Build?</h3>
-                        <p className="text-xs text-neutral-500 max-w-xs mx-auto">Describe a React component. The Cline-style agent generates, renders, and auto-fixes errors.</p>
-                        <div className="mt-4 flex flex-wrap gap-1.5 justify-center">
-                          {['A pricing table', 'A todo app with animations', 'A weather card', 'A login form'].map(s => (
-                            <button key={s} onClick={() => setInput(s)} className="text-xs px-2.5 py-1 rounded-full bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-700 dark:text-neutral-300">{s}</button>
-                          ))}
-                        </div>
+                        <p className="text-xs text-neutral-500 max-w-sm mx-auto leading-relaxed">
+                          Describe whatever you want — a component, a fullstack app, a backend, an integration.
+                          The Cline-style agent will decide the right architecture, generate the code, render it, and auto-fix errors.
+                        </p>
+                        <p className="text-[10px] text-neutral-400 mt-3">
+                          Output mode: <span className="font-semibold text-neutral-600 dark:text-neutral-300">{OUTPUT_MODES.find(m => m.id === eff.outputMode)?.label}</span>
+                          {' · '}
+                          <Link href="/settings" className="underline hover:text-neutral-700 dark:hover:text-neutral-200">change</Link>
+                        </p>
                       </div>
                     )}
                     {(active.messages || []).map((m, i) => (

@@ -39,7 +39,7 @@ ok "Detected: $OS${DISTRO:+ ($DISTRO)}"
 echo
 
 # ---------- 1. Package manager check ----------
-info "[1/9] Checking system package manager..."
+info "[1/10] Checking system package manager..."
 if [ "$OS" = "mac" ]; then
     if ! command -v brew >/dev/null 2>&1; then
         info "Homebrew not found. Installing..."
@@ -58,7 +58,7 @@ fi
 echo
 
 # ---------- 2. Node.js LTS ----------
-info "[2/9] Checking Node.js..."
+info "[2/10] Checking Node.js..."
 if ! command -v node >/dev/null 2>&1; then
     info "Installing Node.js LTS..."
     case "$OS" in
@@ -77,7 +77,7 @@ ok "Node $(node -v)"
 echo
 
 # ---------- 3. Git ----------
-info "[3/9] Checking Git..."
+info "[3/10] Checking Git..."
 if ! command -v git >/dev/null 2>&1; then
     info "Installing Git..."
     case "$OS" in
@@ -93,7 +93,7 @@ ok "Git $(git --version | awk '{print $3}')"
 echo
 
 # ---------- 4. Yarn ----------
-info "[4/9] Checking Yarn..."
+info "[4/10] Checking Yarn..."
 if ! command -v yarn >/dev/null 2>&1; then
     info "Installing Yarn globally via npm..."
     sudo npm install -g yarn 2>/dev/null || npm install -g yarn
@@ -102,7 +102,7 @@ ok "Yarn $(yarn -v)"
 echo
 
 # ---------- 5. MongoDB ----------
-info "[5/9] Checking MongoDB Community..."
+info "[5/10] Checking MongoDB Community..."
 if ! command -v mongod >/dev/null 2>&1; then
     info "Installing MongoDB 7.0..."
     case "$OS" in
@@ -152,7 +152,7 @@ fi
 echo
 
 # ---------- 6. Ollama ----------
-info "[6/9] Checking Ollama..."
+info "[6/10] Checking Ollama..."
 if ! command -v ollama >/dev/null 2>&1; then
     info "Installing Ollama..."
     case "$OS" in
@@ -178,8 +178,46 @@ if [[ "$PULLM" =~ ^[Yy]$ ]]; then
 fi
 echo
 
-# ---------- 7. Project sanity ----------
-info "[7/9] Checking DTB project root..."
+# ---------- 7. Cline VS Code extension ----------
+info "[7/10] Checking VS Code and installing Cline extension..."
+if ! command -v code >/dev/null 2>&1; then
+    warn "VS Code 'code' command not found. Cline runs INSIDE VS Code."
+    read -rp "    Install VS Code now? [y/N]: " VSI
+    if [[ "$VSI" =~ ^[Yy]$ ]]; then
+        case "$OS" in
+            mac)   brew install --cask visual-studio-code ;;
+            linux) case "$DISTRO" in
+                       debian) sudo apt-get install -y wget gpg
+                               wget -qO- https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor > packages.microsoft.gpg
+                               sudo install -D -o root -g root -m 644 packages.microsoft.gpg /etc/apt/keyrings/packages.microsoft.gpg
+                               echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/keyrings/packages.microsoft.gpg] https://packages.microsoft.com/repos/code stable main" | sudo tee /etc/apt/sources.list.d/vscode.list
+                               rm -f packages.microsoft.gpg
+                               sudo apt-get update -y && sudo apt-get install -y code ;;
+                       fedora) sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+                               sudo sh -c 'echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" > /etc/yum.repos.d/vscode.repo'
+                               sudo dnf check-update -y || true
+                               sudo dnf install -y code ;;
+                       arch)   warn "Install code from AUR: yay -S visual-studio-code-bin" ;;
+                   esac ;;
+        esac
+    fi
+fi
+
+if command -v code >/dev/null 2>&1; then
+    if code --list-extensions 2>/dev/null | grep -qi "saoudrizwan.claude-dev"; then
+        ok "Cline extension already installed."
+    else
+        info "Installing Cline extension (saoudrizwan.claude-dev)..."
+        code --install-extension saoudrizwan.claude-dev --force
+        ok "Cline installed. To wire it: VS Code -> Cline panel -> gear -> Ollama -> http://localhost:11434"
+    fi
+else
+    warn "Skipping Cline - VS Code not available."
+fi
+echo
+
+# ---------- 8. Project sanity ----------
+info "[8/10] Checking DTB project root..."
 if [ ! -f "package.json" ]; then
     err "package.json NOT found. Run this from the DTB project root."
     echo "    git clone <your-repo-url> dtb && cd dtb && ./install.sh"
@@ -189,7 +227,7 @@ ok "Found package.json in $(pwd)."
 echo
 
 # ---------- 8. .env ----------
-info "[8/9] Configuring environment variables..."
+info "[9/10] Configuring environment variables..."
 if [ -f .env ]; then
     ok ".env already exists - left untouched."
 else
@@ -204,7 +242,7 @@ fi
 echo
 
 # ---------- 9. yarn install ----------
-info "[9/9] Installing JS dependencies (this can take a few minutes)..."
+info "[10/10] Installing JS dependencies (this can take a few minutes)..."
 yarn install
 echo
 
