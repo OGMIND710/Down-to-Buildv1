@@ -21,6 +21,12 @@ import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { STORAGE_KEY, ACTIVE_KEY, DEFAULT_CODE, newProject, loadSettings, OVERRIDABLE_FIELDS, effectiveSettings, OUTPUT_MODES, getSystemPrompt, extractComponent, extractFiles, extractSupabase } from '@/lib/dtb-store'
 import JSZip from 'jszip'
+import dynamic from 'next/dynamic'
+
+// WebContainer runner is a client-only component that lazy-loads @webcontainer/api.
+// We import it dynamically with ssr:false so the WebContainer SDK is never bundled
+// for server rendering (it requires window/SharedArrayBuffer).
+const WebContainerRunner = dynamic(() => import('@/components/WebContainerRunner'), { ssr: false })
 
 function extractCode(text) { return extractComponent(text) }
 
@@ -255,7 +261,10 @@ export default function App() {
         const aiMsg = { role: 'assistant', content }
         if (files.length > 0) {
           updateActive({ messages: [...baseMessages, aiMsg], files })
-          setTab('files'); toast.success(`Generated ${files.length} files`)
+          // WebContainer mode → jump to Preview so the embedded runner is visible;
+          // Local zip mode → jump to Files explorer (user must download / push).
+          setTab(eff.outputMode === 'webcontainer' ? 'preview' : 'files')
+          toast.success(`Generated ${files.length} files`)
         } else {
           updateActive({ messages: [...baseMessages, aiMsg] })
           toast.warning('No file blocks detected (expected ```file:path … ```)')
@@ -573,9 +582,9 @@ export default function App() {
                     </TabsList>
                     <div className="ml-auto flex items-center gap-2">
                       {eff.outputMode === 'webcontainer' && (active.files || []).length > 0 && (
-                        <Link href={`/run/${active.id}`} target="_blank">
-                          <Button size="sm" className="h-7 text-xs bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200">
-                            ▶ Run in browser
+                        <Link href={`/run/${active.id}`} target="_blank" title="Open WebContainer in a dedicated full-screen tab">
+                          <Button variant="outline" size="sm" className="h-7 text-xs border-neutral-200 dark:border-neutral-800">
+                            ↗ Fullscreen
                           </Button>
                         </Link>
                       )}
@@ -607,25 +616,30 @@ export default function App() {
                     </div>
                   </div>
                   <TabsContent value="preview" className="flex-1 m-0 p-0 bg-neutral-50 dark:bg-neutral-950">
-                    {(eff.outputMode === 'webcontainer' || eff.outputMode === 'local') ? (
+                    {eff.outputMode === 'webcontainer' ? (
+                      (active.files || []).length === 0 ? (
+                        <div className="h-full flex items-center justify-center text-center p-8">
+                          <div className="max-w-md">
+                            <div className="text-5xl mb-3">🚀</div>
+                            <h3 className="text-lg font-semibold mb-2">Fullstack project (WebContainer)</h3>
+                            <p className="text-sm text-neutral-500">
+                              Describe what you want to build in the chat. The AI will generate a multi-file Next.js or Express project, and it will start running here automatically.
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <WebContainerRunner project={active} compact />
+                      )
+                    ) : eff.outputMode === 'local' ? (
                       <div className="h-full flex items-center justify-center text-center p-8">
                         <div className="max-w-md">
-                          <div className="text-5xl mb-3">{eff.outputMode === 'webcontainer' ? '🚀' : '📦'}</div>
-                          <h3 className="text-lg font-semibold mb-2">
-                            {eff.outputMode === 'webcontainer' ? 'Fullstack project (WebContainer)' : 'Fullstack project (Local)'}
-                          </h3>
-                          <p className="text-sm text-neutral-500 mb-4">
+                          <div className="text-5xl mb-3">📦</div>
+                          <h3 className="text-lg font-semibold mb-2">Fullstack project (Local)</h3>
+                          <p className="text-sm text-neutral-500">
                             {(active.files || []).length === 0
-                              ? 'Describe what you want to build in the chat. The AI will generate a multi-file Next.js or Express project.'
-                              : eff.outputMode === 'webcontainer'
-                                ? `${active.files.length} files generated. Click "▶ Run in browser" to install dependencies and start the dev server inside your browser via WebContainers.`
-                                : `${active.files.length} files generated. Download the ZIP, then run "yarn install && yarn dev" locally. Or push all files to GitHub.`}
+                              ? 'Describe what you want to build in the chat. The AI will generate a multi-file project.'
+                              : `${active.files.length} files generated. Download the ZIP, then run "yarn install && yarn dev" locally. Or push all files to GitHub.`}
                           </p>
-                          {eff.outputMode === 'webcontainer' && (active.files || []).length > 0 && (
-                            <Link href={`/run/${active.id}`} target="_blank">
-                              <Button className="bg-neutral-900 text-white hover:bg-neutral-800 dark:bg-white dark:text-neutral-900">▶ Run in browser</Button>
-                            </Link>
-                          )}
                         </div>
                       </div>
                     ) : (

@@ -25,6 +25,9 @@ const nextConfig = {
   async headers() {
     return [
       {
+        // WebContainers require cross-origin isolation. We enable it
+        // globally now because the WebContainer runner is embedded
+        // directly in the workspace (same page as the chat).
         source: "/(.*)",
         headers: [
           { key: "X-Frame-Options", value: "ALLOWALL" },
@@ -32,12 +35,6 @@ const nextConfig = {
           { key: "Access-Control-Allow-Origin", value: process.env.CORS_ORIGINS || "*" },
           { key: "Access-Control-Allow-Methods", value: "GET, POST, PUT, DELETE, OPTIONS" },
           { key: "Access-Control-Allow-Headers", value: "*" },
-        ],
-      },
-      {
-        // WebContainers require cross-origin isolation on the pages where they boot.
-        source: "/run/:path*",
-        headers: [
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
           { key: "Cross-Origin-Embedder-Policy", value: "require-corp" },
         ],

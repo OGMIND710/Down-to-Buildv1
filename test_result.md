@@ -241,6 +241,46 @@ frontend:
         agent: "main"
         comment: "5 sections, Supabase test, GitHub login validates PAT. Not auto-tested yet (waiting for user permission)."
 
+  - task: "Embedded WebContainer in workspace Preview tab"
+    implemented: true
+    working: "NA"
+    file: "app/page.js + components/WebContainerRunner.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Moved the WebContainer runner out of /run/[id] (kept as optional fullscreen) into the right Preview panel of the workspace.
+          - Dynamic-imported components/WebContainerRunner.jsx with ssr:false in app/page.js
+          - When outputMode='webcontainer' AND files.length>0, the embedded runner appears in the Preview tab with terminal + iframe split (compact mode).
+          - The 'Run in browser' CTA was replaced by a smaller '↗ Fullscreen' link to /run/[id] for users who want full-screen mode.
+          - On successful multi-file generation, the workspace now auto-switches to the Preview tab for webcontainer mode (instead of the Files tab).
+          - COOP/COEP headers in next.config.js already cover '/(.*)', so cross-origin isolation works on the root.
+          Manual test: open /, switch to WebContainer mode in /settings, generate a Next.js project, expect the runner to appear inline.
+
+  - task: "Force npx --yes in WebContainer-generated package.json"
+    implemented: true
+    working: "NA"
+    file: "lib/dtb-store.js + components/WebContainerRunner.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: true
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Two-layer fix for 'jsh: command not found: next':
+          1. lib/dtb-store.js MULTIFILE_FORMAT prompt now explicitly instructs the AI to write
+             "dev": "npx --yes next dev -p 3000" (and similar for vite/nodemon) instead of bare binaries.
+          2. components/WebContainerRunner.jsx sanitizePackageJson() patches any package.json the LLM
+             still emits with bare next/vite/nodemon by prepending 'npx --yes ' before mounting.
+          3. A runtime fallback in WebContainerRunner watches dev output for 'command not found' and
+             auto-spawns 'npx --yes next dev -p 3000' as a recovery.
+          Manual test: generate a Next.js project in WebContainer mode, expect the dev server to start
+          without 'command not found'.
+
 metadata:
   created_by: "main_agent"
   version: "2.0"
